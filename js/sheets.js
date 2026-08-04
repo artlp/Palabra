@@ -125,7 +125,7 @@ export async function loadWordsFromSource(sourceUrl, { sheetName = '', fallbackU
   }
 
   if (!words.length) {
-    throw new Error('Не удалось распознать словарь. Нужны столбцы с испанским словом и русским переводом.');
+    throw new Error('Не удалось распознать словарь. Нужны колонки B «Испанский» и C «Перевод».');
   }
 
   return {
@@ -140,7 +140,7 @@ export async function loadWordsFromFile(file) {
   if (!file) throw new Error('Файл не выбран.');
   const text = await file.text();
   const words = matrixToWords(parseDelimited(text));
-  if (!words.length) throw new Error('В CSV не найдено слов.');
+  if (!words.length) throw new Error('В CSV не найдены значения в колонках B «Испанский» и C «Перевод».');
   return {
     words,
     sourceType: 'Локальный CSV',

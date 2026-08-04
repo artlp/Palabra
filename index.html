@@ -316,7 +316,7 @@
         <div class="settings-grid">
           <article class="panel settings-panel">
             <div class="panel-heading"><div><span class="panel-kicker">Источник слов</span><h3>Google Sheets</h3></div></div>
-            <p class="settings-intro">Первая строка — заголовки. Поддерживаются названия <code>Spanish</code>, <code>Russian</code>, <code>Part of speech</code> и их русские аналоги.</p>
+            <p class="settings-intro">Формат таблицы: A — <code>Артикль</code>, B — <code>Испанский</code>, C — <code>Перевод</code>, D — <code>Часть речи</code>. Для карточек используются только колонки B и C.</p>
             <form id="source-settings-form" class="settings-form">
               <label>
                 <span>Ссылка на таблицу</span>
@@ -340,12 +340,13 @@
             <form id="learning-settings-form" class="settings-form two-column-form">
               <label><span>Новых слов в день</span><input id="daily-new-limit" type="number" min="0" max="200" step="1"></label>
               <label><span>Повторений в день</span><input id="daily-review-limit" type="number" min="1" max="1000" step="1"></label>
-              <label><span>Проверка опечаток</span>
+              <label><span>Допуск опечаток</span>
                 <select id="answer-tolerance">
-                  <option value="strict">Строгая</option>
-                  <option value="balanced">Сбалансированная</option>
-                  <option value="lenient">Мягкая</option>
+                  <option value="strict">Строгий</option>
+                  <option value="balanced">Сбалансированный</option>
+                  <option value="lenient">Мягкий</option>
                 </select>
+                <small>Используется, когда включено примерное совпадение.</small>
               </label>
               <label><span>Направление</span>
                 <select id="direction-mode">
@@ -356,6 +357,8 @@
                 </select>
               </label>
               <label class="checkbox-field span-two"><input id="accept-accents" type="checkbox"><span><strong>Засчитывать пропущенные ударения</strong><small>Ответ <em>como</em> для <em>cómo</em> считается верным, но ошибка отмечается.</small></span></label>
+              <label class="checkbox-field span-two"><input id="ignore-special-characters" type="checkbox"><span><strong>Игнорировать специальные символы</strong><small>Знаки препинания, кавычки, скобки, дефисы и другие символы не влияют на проверку.</small></span></label>
+              <label class="checkbox-field span-two"><input id="accept-approximate-matches" type="checkbox"><span><strong>Примерное совпадение</strong><small>Засчитывает небольшие опечатки и краткий ответ без пояснения в скобках: <em>мы</em> для <em>мы (мужской род или смешанная группа)</em>.</small></span></label>
               <label><span>Оформление</span>
                 <select id="theme-select"><option value="system">Как в системе</option><option value="light">Светлое</option><option value="dark">Тёмное</option></select>
               </label>

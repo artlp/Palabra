@@ -34,6 +34,23 @@ test('table converter detects Russian headers and creates stable words', () => {
   assert.match(words[0].id, /^w_/);
 });
 
+test('four-column user layout imports only columns B and C', () => {
+  const first = matrixToWords([
+    ['Артикль', 'Испанский', 'Перевод', 'Часть речи'],
+    ['el', 'nosotros', 'мы (мужской род или смешанная группа)', 'местоимение'],
+  ]);
+  const changedMetadata = matrixToWords([
+    ['Артикль', 'Испанский', 'Перевод', 'Часть речи'],
+    ['los', 'nosotros', 'мы (мужской род или смешанная группа)', 'другая категория'],
+  ]);
+
+  assert.equal(first.length, 1);
+  assert.equal(first[0].spanish, 'nosotros');
+  assert.equal(first[0].russian, 'мы (мужской род или смешанная группа)');
+  assert.equal(first[0].partOfSpeech, 'не указано');
+  assert.equal(first[0].id, changedMetadata[0].id);
+});
+
 test('answer evaluation supports alternatives, articles and accents', () => {
   assert.equal(evaluateAnswer('ехать', 'идти; ехать').accepted, true);
   assert.equal(evaluateAnswer('casa', 'la casa').accepted, true);
@@ -45,9 +62,41 @@ test('answer evaluation supports alternatives, articles and accents', () => {
   assert.equal(strictAccent.status, 'almost');
 });
 
-test('balanced typo tolerance rejects short-word substitutions and flags long near miss', () => {
+test('approximate matching is optional and respects typo tolerance', () => {
   assert.equal(evaluateAnswer('si', 'no').status, 'wrong');
-  assert.equal(evaluateAnswer('necesita', 'necesitar').status, 'almost');
+
+  const accepted = evaluateAnswer('necesita', 'necesitar');
+  assert.equal(accepted.status, 'correct-approximate');
+  assert.equal(accepted.accepted, true);
+
+  const disabled = evaluateAnswer('necesita', 'necesitar', { acceptApproximateMatches: false });
+  assert.equal(disabled.status, 'almost');
+  assert.equal(disabled.accepted, false);
+
+  assert.equal(evaluateAnswer('cassa', 'la casa').status, 'correct-approximate');
+});
+
+test('approximate matching accepts an answer without explanatory text in brackets', () => {
+  const expected = 'мы (мужской род или смешанная группа)';
+  assert.equal(evaluateAnswer('мы', expected).status, 'correct-approximate');
+  assert.equal(evaluateAnswer('мы', expected, { acceptApproximateMatches: false }).accepted, false);
+  assert.equal(evaluateAnswer('мы', 'мы (мужской род, смешанная группа)').accepted, true);
+});
+
+test('special characters can be ignored independently', () => {
+  const ignored = evaluateAnswer('hola', '¡hola!', {
+    ignoreSpecialCharacters: true,
+    acceptApproximateMatches: false,
+  });
+  assert.equal(ignored.status, 'correct-special');
+  assert.equal(ignored.accepted, true);
+
+  const strict = evaluateAnswer('hola', '¡hola!', {
+    ignoreSpecialCharacters: false,
+    acceptApproximateMatches: false,
+  });
+  assert.equal(strict.status, 'wrong');
+  assert.equal(strict.accepted, false);
 });
 
 test('review schedule grows and reaches learned/mastered states', () => {

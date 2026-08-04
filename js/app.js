@@ -520,6 +520,8 @@ function renderSettings() {
   setFormValue('answer-tolerance', appState.settings.answerTolerance || 'balanced');
   setFormValue('direction-mode', appState.settings.directionMode || 'adaptive-random');
   setFormValue('accept-accents', appState.settings.acceptAccentMistakes !== false);
+  setFormValue('ignore-special-characters', appState.settings.ignoreSpecialCharacters !== false);
+  setFormValue('accept-approximate-matches', appState.settings.acceptApproximateMatches !== false);
   setFormValue('theme-select', appState.settings.theme || 'system');
   renderSourceStatus();
 
@@ -723,6 +725,8 @@ function feedbackFor(evaluation, typedAnswer) {
   if (evaluation.status === 'correct') return { tone: 'correct', icon: '✓', title: 'Верно', copy: 'Ответ совпал с переводом.' };
   if (evaluation.status === 'correct-accent') return { tone: 'correct', icon: '✓', title: 'Верно, но проверьте ударение', copy: 'Акцент или диакритический знак пропущен.' };
   if (evaluation.status === 'correct-article') return { tone: 'correct', icon: '✓', title: 'Верно', copy: 'Разница только в испанском артикле.' };
+  if (evaluation.status === 'correct-special') return { tone: 'correct', icon: '✓', title: 'Верно', copy: 'Специальные символы при проверке не учитывались.' };
+  if (evaluation.status === 'correct-approximate') return { tone: 'correct', icon: '≈', title: 'Засчитано', copy: 'Ответ принят как примерное совпадение.' };
   if (evaluation.status === 'almost') return { tone: 'almost', icon: '~', title: 'Почти', copy: `Похоже на правильный ответ: «${typedAnswer}». Проверьте написание.` };
   return { tone: 'wrong', icon: '×', title: 'Пока неверно', copy: typedAnswer ? `Ваш ответ: «${typedAnswer}».` : 'Ответ не был введён.' };
 }
@@ -1145,6 +1149,8 @@ function handleLearningSettings(event) {
   appState.settings.answerTolerance = $('answer-tolerance').value;
   appState.settings.directionMode = $('direction-mode').value;
   appState.settings.acceptAccentMistakes = $('accept-accents').checked;
+  appState.settings.ignoreSpecialCharacters = $('ignore-special-characters').checked;
+  appState.settings.acceptApproximateMatches = $('accept-approximate-matches').checked;
   appState.settings.theme = $('theme-select').value;
   persistState();
   applyTheme();

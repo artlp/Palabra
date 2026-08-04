@@ -54,7 +54,10 @@ test('deployment workflow runs checks and Firestore rules isolate users', () => 
   const workflow = read('.github/workflows/deploy.yml');
   const rules = read('firestore.rules');
   assert.match(workflow, /npm test && npm run check/);
-  assert.match(workflow, /actions\/deploy-pages@v4/);
+  assert.match(workflow, /actions\/setup-node@v6/);
+  assert.match(workflow, /actions\/configure-pages@v6/);
+  assert.match(workflow, /actions\/upload-pages-artifact@v5/);
+  assert.match(workflow, /actions\/deploy-pages@v5/);
   assert.match(rules, /request\.auth\.uid == userId/);
   assert.match(rules, /allow read, write: if false/);
 });

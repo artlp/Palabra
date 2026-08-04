@@ -5,6 +5,8 @@ export const DEFAULT_LEARNING_SETTINGS = Object.freeze({
   dailyNewLimit: 20,
   dailyReviewLimit: 200,
   acceptAccentMistakes: true,
+  ignoreSpecialCharacters: true,
+  acceptApproximateMatches: true,
   answerTolerance: 'balanced',
   directionMode: 'adaptive-random',
   timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Madrid',
@@ -151,8 +153,20 @@ const HEADER_ALIASES = Object.freeze({
 
 export function detectColumns(headers) {
   const normalized = headers.map(canonicalHeader);
-  const result = {};
 
+  const articleHeaders = new Set(['артикль', 'article', 'articulo']);
+  const spanishHeaders = new Set(HEADER_ALIASES.spanish.map(canonicalHeader));
+  const russianHeaders = new Set(HEADER_ALIASES.russian.map(canonicalHeader));
+  const isArticleSpanishTranslationLayout = headers.length >= 3
+    && articleHeaders.has(normalized[0])
+    && spanishHeaders.has(normalized[1])
+    && russianHeaders.has(normalized[2]);
+
+  // Пользовательский формат: A «Артикль», B «Испанский», C «Перевод»,
+  // D «Часть речи». В карточки и идентификаторы попадают только B и C.
+  if (isArticleSpanishTranslationLayout) return { spanish: 1, russian: 2 };
+
+  const result = {};
   for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
     const normalizedAliases = aliases.map(canonicalHeader);
     const exactIndex = normalized.findIndex((header) => normalizedAliases.includes(header));
@@ -168,7 +182,11 @@ export function detectColumns(headers) {
 
   if (result.spanish === undefined && headers.length >= 1) result.spanish = 0;
   if (result.russian === undefined && headers.length >= 2) result.russian = 1;
-  if (result.partOfSpeech === undefined && headers.length >= 3) result.partOfSpeech = 2;
+  if (result.partOfSpeech === undefined && headers.length >= 3) {
+    const usedColumns = new Set([result.spanish, result.russian]);
+    const fallbackIndex = headers.findIndex((_, index) => !usedColumns.has(index));
+    if (fallbackIndex >= 0) result.partOfSpeech = fallbackIndex;
+  }
   return result;
 }
 
@@ -220,20 +238,26 @@ export function matrixToWords(matrix) {
   return tableToWords(headers, rows);
 }
 
-export function normalizeText(value, { stripAccents = false, removeArticles = false } = {}) {
+export function normalizeText(
+  value,
+  { stripAccents = false, removeArticles = false, ignoreSpecialCharacters = true } = {},
+) {
   let result = String(value ?? '')
     .trim()
     .toLocaleLowerCase('es')
     .replace(/ё/g, 'е')
     .replace(/[“”„«»]/g, '"')
     .replace(/[’‘`]/g, "'")
-    .replace(/[‐‑‒–—]/g, '-')
-    .replace(/[¿¡!?.,:;()\[\]{}"']/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/[‐‑‒–—]/g, '-');
+
+  if (ignoreSpecialCharacters) {
+    result = result.replace(/[\p{P}\p{S}]+/gu, ' ');
+  }
+
+  result = result.replace(/\s+/g, ' ').trim();
 
   if (removeArticles) {
-    result = result.replace(/^(el|la|los|las|un|una|unos|unas)\s+/i, '');
+    result = result.replace(/^(el|la|los|las|un|una|unos|unas)(?=\s|$)\s*/iu, '');
   }
 
   if (stripAccents) {
@@ -242,22 +266,83 @@ export function normalizeText(value, { stripAccents = false, removeArticles = fa
   return result;
 }
 
+function splitAnswerEntry(value) {
+  const source = String(value ?? '');
+  const answers = [];
+  const brackets = [];
+  let field = '';
+  let quote = '';
+
+  const pushField = () => {
+    const answer = field.trim();
+    if (answer) answers.push(answer);
+    field = '';
+  };
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+
+    if (quote) {
+      field += char;
+      if (char === quote) quote = '';
+      continue;
+    }
+
+    if (char === '"') {
+      quote = char;
+      field += char;
+      continue;
+    }
+
+    if (char === '(' || char === '[' || char === '{') {
+      brackets.push(char);
+      field += char;
+      continue;
+    }
+
+    if (char === ')' || char === ']' || char === '}') {
+      if (brackets.length) brackets.pop();
+      field += char;
+      continue;
+    }
+
+    const commaSeparator = char === ',' && /\s/u.test(source[index + 1] || '');
+    const isSeparator = brackets.length === 0
+      && (char === ';' || char === '|' || char === '/' || char === '\n' || commaSeparator);
+
+    if (isSeparator) pushField();
+    else field += char;
+  }
+
+  pushField();
+  return answers;
+}
+
 export function splitExpectedAnswers(value) {
   const raw = Array.isArray(value) ? value : [value];
   const answers = raw
-    .flatMap((entry) => String(entry ?? '').split(/\s*(?:;|\||\/|\n|,\s+)\s*/g))
+    .flatMap(splitAnswerEntry)
     .map((entry) => entry.trim())
     .filter(Boolean);
+  return [...new Set(answers)];
+}
 
-  const expanded = new Set();
-  for (const answer of answers) {
-    expanded.add(answer);
-    const withoutParenthetical = answer.replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s+/g, ' ').trim();
-    if (withoutParenthetical) expanded.add(withoutParenthetical);
-    const withoutArticle = answer.replace(/^(el|la|los|las|un|una|unos|unas)\s+/i, '').trim();
-    if (withoutArticle) expanded.add(withoutArticle);
+function stripExplanatoryFragments(value) {
+  let result = String(value ?? '').trim();
+  for (let pass = 0; pass < 6; pass += 1) {
+    const next = result
+      .replace(/\s*[([{][^()[\]{}]*[)\]}]\s*/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (next === result) break;
+    result = next;
   }
-  return [...expanded];
+  return result;
+}
+
+function approximateVariants(answer) {
+  const simplified = stripExplanatoryFragments(answer);
+  return simplified && simplified !== answer ? [simplified] : [];
 }
 
 export function levenshteinDistance(left, right) {
@@ -291,57 +376,126 @@ function toleranceFor(length, mode) {
   return Math.max(1, Math.floor(length * 0.12));
 }
 
+function acceptedResult(status, answer, distance = 0) {
+  return { status, accepted: true, exact: status === 'correct', matched: answer, distance };
+}
+
 export function evaluateAnswer(input, expected, options = {}) {
   const settings = {
     acceptAccentMistakes: true,
+    ignoreSpecialCharacters: true,
+    acceptApproximateMatches: true,
     answerTolerance: 'balanced',
     ...options,
   };
   const typed = String(input ?? '').trim();
-  const variants = splitExpectedAnswers(expected);
+  const answers = splitExpectedAnswers(expected);
 
   if (!typed) {
     return { status: 'empty', accepted: false, exact: false, matched: null, distance: null };
   }
 
-  const normalizedTyped = normalizeText(typed);
-  const accentlessTyped = normalizeText(typed, { stripAccents: true });
-  let closest = { answer: variants[0] || '', distance: Number.POSITIVE_INFINITY };
+  const candidates = answers.flatMap((answer) => [
+    { answer, value: answer, approximate: false },
+    ...(settings.acceptApproximateMatches
+      ? approximateVariants(answer).map((value) => ({ answer, value, approximate: true }))
+      : []),
+  ]);
 
-  for (const answer of variants) {
-    const normalizedExpected = normalizeText(answer);
+  let closest = {
+    answer: answers[0] || '',
+    distance: Number.POSITIVE_INFINITY,
+    comparisonLength: 0,
+    blockedByAccent: false,
+  };
+
+  for (const candidate of candidates) {
+    const comparisonOptions = { ignoreSpecialCharacters: settings.ignoreSpecialCharacters };
+    const strictTyped = normalizeText(typed, { ignoreSpecialCharacters: false });
+    const strictExpected = normalizeText(candidate.value, { ignoreSpecialCharacters: false });
+    const normalizedTyped = normalizeText(typed, comparisonOptions);
+    const normalizedExpected = normalizeText(candidate.value, comparisonOptions);
+
     if (normalizedTyped === normalizedExpected) {
-      return { status: 'correct', accepted: true, exact: true, matched: answer, distance: 0 };
+      if (candidate.approximate) return acceptedResult('correct-approximate', candidate.answer);
+      const status = strictTyped === strictExpected ? 'correct' : 'correct-special';
+      return acceptedResult(status, candidate.answer);
     }
 
-    const accentlessExpected = normalizeText(answer, { stripAccents: true });
-    if (accentlessTyped === accentlessExpected) {
+    const accentlessTyped = normalizeText(typed, { ...comparisonOptions, stripAccents: true });
+    const accentlessExpected = normalizeText(candidate.value, { ...comparisonOptions, stripAccents: true });
+    const accentOnlyDifference = accentlessTyped === accentlessExpected;
+    if (accentOnlyDifference && settings.acceptAccentMistakes) {
+      const status = candidate.approximate ? 'correct-approximate' : 'correct-accent';
+      return acceptedResult(status, candidate.answer);
+    }
+
+    const articlelessTyped = normalizeText(typed, { ...comparisonOptions, removeArticles: true });
+    const articlelessExpected = normalizeText(candidate.value, { ...comparisonOptions, removeArticles: true });
+    if (articlelessTyped === articlelessExpected) {
+      const status = candidate.approximate ? 'correct-approximate' : 'correct-article';
+      return acceptedResult(status, candidate.answer);
+    }
+
+    const articlelessAccentTyped = normalizeText(typed, {
+      ...comparisonOptions,
+      stripAccents: true,
+      removeArticles: true,
+    });
+    const articlelessAccentExpected = normalizeText(candidate.value, {
+      ...comparisonOptions,
+      stripAccents: true,
+      removeArticles: true,
+    });
+    const articleAccentOnlyDifference = articlelessAccentTyped === articlelessAccentExpected;
+    if (articleAccentOnlyDifference && settings.acceptAccentMistakes) {
+      const status = candidate.approximate ? 'correct-approximate' : 'correct-accent';
+      return acceptedResult(status, candidate.answer);
+    }
+
+    const distanceOptions = [
+      { removeArticles: false },
+      { removeArticles: true },
+    ].map(({ removeArticles }) => {
+      const normalizationOptions = {
+        ...comparisonOptions,
+        stripAccents: settings.acceptAccentMistakes,
+        removeArticles,
+      };
+      const left = normalizeText(typed, normalizationOptions);
+      const right = normalizeText(candidate.value, normalizationOptions);
       return {
-        status: settings.acceptAccentMistakes ? 'correct-accent' : 'almost',
-        accepted: Boolean(settings.acceptAccentMistakes),
-        exact: false,
-        matched: answer,
-        distance: 0,
+        distance: levenshteinDistance(left, right),
+        comparisonLength: Math.max(left.length, right.length),
+      };
+    });
+    const bestDistance = distanceOptions.sort((left, right) => left.distance - right.distance)[0];
+    const blockedByAccent = !settings.acceptAccentMistakes
+      && (accentOnlyDifference || articleAccentOnlyDifference);
+
+    if (
+      bestDistance.distance < closest.distance
+      || (bestDistance.distance === closest.distance && closest.blockedByAccent && !blockedByAccent)
+    ) {
+      closest = {
+        answer: candidate.answer,
+        distance: bestDistance.distance,
+        comparisonLength: bestDistance.comparisonLength,
+        blockedByAccent,
       };
     }
-
-    const articlelessTyped = normalizeText(typed, { stripAccents: true, removeArticles: true });
-    const articlelessExpected = normalizeText(answer, { stripAccents: true, removeArticles: true });
-    if (articlelessTyped === articlelessExpected) {
-      return { status: 'correct-article', accepted: true, exact: false, matched: answer, distance: 0 };
-    }
-
-    const distance = levenshteinDistance(accentlessTyped, accentlessExpected);
-    if (distance < closest.distance) closest = { answer, distance };
   }
 
-  const comparisonLength = Math.max(accentlessTyped.length, normalizeText(closest.answer, { stripAccents: true }).length);
-  const tolerance = toleranceFor(comparisonLength, settings.answerTolerance);
-  const closeEnough = closest.distance <= tolerance;
+  const tolerance = toleranceFor(closest.comparisonLength, settings.answerTolerance);
+  const closeEnough = closest.blockedByAccent
+    || (Number.isFinite(closest.distance) && closest.distance <= tolerance);
+  const acceptedApproximate = closeEnough
+    && settings.acceptApproximateMatches
+    && !closest.blockedByAccent;
 
   return {
-    status: closeEnough ? 'almost' : 'wrong',
-    accepted: false,
+    status: acceptedApproximate ? 'correct-approximate' : closeEnough ? 'almost' : 'wrong',
+    accepted: acceptedApproximate,
     exact: false,
     matched: closest.answer,
     distance: Number.isFinite(closest.distance) ? closest.distance : null,
