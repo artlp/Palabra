@@ -41,6 +41,16 @@ test('all local HTML and service-worker shell assets exist', () => {
   assert.deepEqual(missing, []);
 });
 
+test('Font Awesome sprite contains every referenced interface icon', () => {
+  const html = read('index.html');
+  const sprite = read('icons/fa-sprite.svg');
+  const references = allMatches(html, /fa-sprite\.svg#([^"]+)/g);
+  assert.ok(references.length > 0);
+  references.forEach((iconId) => {
+    assert.match(sprite, new RegExp(`id="${iconId}"`));
+  });
+});
+
 test('manifest is valid and declares install icons', () => {
   const manifest = JSON.parse(read('manifest.webmanifest'));
   assert.equal(manifest.display, 'standalone');

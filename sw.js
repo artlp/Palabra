@@ -1,10 +1,11 @@
-const CACHE_NAME = 'palabra-shell-v4';
+const CACHE_NAME = 'palabra-shell-v5';
 const APP_SHELL = [
   './',
   './index.html',
   './styles.css',
   './manifest.webmanifest',
   './icons/icon.svg',
+  './icons/fa-sprite.svg',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './data/demo-words.csv',

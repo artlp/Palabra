@@ -163,8 +163,10 @@ export function detectColumns(headers) {
     && russianHeaders.has(normalized[2]);
 
   // Пользовательский формат: A «Артикль», B «Испанский», C «Перевод»,
-  // D «Часть речи». В карточки и идентификаторы попадают только B и C.
-  if (isArticleSpanishTranslationLayout) return { spanish: 1, russian: 2 };
+  // D «Часть речи». Артикль остаётся справочным, а часть речи импортируется.
+  if (isArticleSpanishTranslationLayout) {
+    return { spanish: 1, russian: 2, partOfSpeech: headers.length >= 4 ? 3 : undefined };
+  }
 
   const result = {};
   for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
@@ -213,7 +215,7 @@ export function tableToWords(headers, rows) {
 
     const partOfSpeech = String(row?.[columns.partOfSpeech] ?? '').trim() || 'не указано';
     const explicitId = columns.id === undefined ? '' : String(row?.[columns.id] ?? '').trim();
-    const fingerprint = `${normalizeText(spanish, { stripAccents: true })}|${normalizeText(russian, { stripAccents: true })}|${canonicalHeader(partOfSpeech)}`;
+    const fingerprint = `${normalizeText(spanish, { stripAccents: true })}|${normalizeText(russian, { stripAccents: true })}`;
     let id = explicitId || `w_${stableHash(fingerprint)}`;
     if (seenIds.has(id)) id = `${id}_${sourceIndex + 1}`;
     seenIds.add(id);

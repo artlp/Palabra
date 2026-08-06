@@ -34,7 +34,7 @@ test('table converter detects Russian headers and creates stable words', () => {
   assert.match(words[0].id, /^w_/);
 });
 
-test('four-column user layout imports only columns B and C', () => {
+test('four-column user layout imports columns B, C and D', () => {
   const first = matrixToWords([
     ['Артикль', 'Испанский', 'Перевод', 'Часть речи'],
     ['el', 'nosotros', 'мы (мужской род или смешанная группа)', 'местоимение'],
@@ -47,7 +47,8 @@ test('four-column user layout imports only columns B and C', () => {
   assert.equal(first.length, 1);
   assert.equal(first[0].spanish, 'nosotros');
   assert.equal(first[0].russian, 'мы (мужской род или смешанная группа)');
-  assert.equal(first[0].partOfSpeech, 'не указано');
+  assert.equal(first[0].partOfSpeech, 'местоимение');
+  assert.equal(changedMetadata[0].partOfSpeech, 'другая категория');
   assert.equal(first[0].id, changedMetadata[0].id);
 });
 
