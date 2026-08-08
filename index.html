@@ -211,6 +211,10 @@
                 <strong id="expected-answer"></strong>
                 <p id="card-example" hidden></p>
               </div>
+              <div class="verdict-actions">
+                <button class="button button-ghost compact" id="accept-answer-button" type="button" aria-pressed="false" hidden>Засчитать ответ</button>
+                <small id="rating-cap-note" hidden>Ответ не совпал: интервал будет не больше, чем у оценки «Трудно». Если перевод верен по смыслу, засчитайте его.</small>
+              </div>
               <div class="rating-block">
                 <span>Насколько легко вспомнилось?</span>
                 <div class="rating-grid">
@@ -219,7 +223,7 @@
                   <button class="rating-button rating-good" type="button" data-rating="2"><strong>3</strong><span>Хорошо</span><small>по плану</small></button>
                   <button class="rating-button rating-easy" type="button" data-rating="3"><strong>4</strong><span>Легко</span><small>дальше</small></button>
                 </div>
-                <small class="keyboard-note">После проверки: клавиши 1–4 выбирают оценку</small>
+                <small class="keyboard-note">После проверки: клавиши 1–4 выбирают оценку, 0 — засчитать ответ</small>
               </div>
             </div>
           </article>

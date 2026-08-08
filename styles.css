@@ -241,6 +241,9 @@ input::placeholder { color: var(--text-faint); }
 .answer-comparison span { color: var(--text-muted); font-size: .68rem; }
 .answer-comparison strong { margin-top: 5px; font-size: 1.06rem; }
 .answer-comparison p { margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: .75rem; font-style: italic; line-height: 1.5; }
+.verdict-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: -4px 0 14px; }
+.verdict-actions small { flex: 1 1 240px; min-width: 0; color: var(--text-faint); font-size: .68rem; line-height: 1.45; }
+.verdict-actions [aria-pressed="true"] { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); background: var(--success-soft); color: var(--success); }
 .rating-block > span { display: block; margin-bottom: 9px; color: var(--text-muted); font-size: .7rem; font-weight: 800; }
 .rating-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .rating-button { min-width: 0; padding: 10px 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); cursor: pointer; }

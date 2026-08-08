@@ -831,6 +831,8 @@ function showNextCard() {
     hintUsed: false,
     evaluation: null,
     typedAnswer: '',
+    manualOverride: false,
+    accepted: false,
     suggestedRating: 2,
   };
   session.phase = 'question';
@@ -865,6 +867,11 @@ function showHint() {
   $('answer-input').focus();
 }
 
+function suggestedRatingFor(current) {
+  if (current.manualOverride || current.evaluation.accepted) return current.hintUsed ? 1 : 2;
+  return current.evaluation.status === 'almost' ? 1 : 0;
+}
+
 function feedbackFor(evaluation, typedAnswer) {
   if (evaluation.status === 'correct') return { tone: 'correct', icon: '✓', title: 'Верно', copy: 'Ответ совпал с переводом.' };
   if (evaluation.status === 'correct-accent') return { tone: 'correct', icon: '✓', title: 'Верно, но проверьте ударение', copy: 'Акцент или диакритический знак пропущен.' };
@@ -873,6 +880,54 @@ function feedbackFor(evaluation, typedAnswer) {
   if (evaluation.status === 'correct-approximate') return { tone: 'correct', icon: '≈', title: 'Засчитано', copy: 'Ответ принят как примерное совпадение.' };
   if (evaluation.status === 'almost') return { tone: 'almost', icon: '~', title: 'Почти', copy: `Похоже на правильный ответ: «${typedAnswer}». Проверьте написание.` };
   return { tone: 'wrong', icon: '×', title: 'Пока неверно', copy: typedAnswer ? `Ваш ответ: «${typedAnswer}».` : 'Ответ не был введён.' };
+}
+
+// Рисует вердикт по текущему ответу: сам автоматический разбор, кнопку ручного
+// зачёта и подсказку об ограничении интервала. Вызывается и после проверки,
+// и после переключения ручного зачёта.
+function renderAnswerVerdict() {
+  const current = runtime.study?.current;
+  if (!current) return {};
+
+  const feedback = current.manualOverride
+    ? { tone: 'correct', icon: '✓', title: 'Засчитано вручную', copy: `Ответ «${current.typedAnswer}» принят по вашей оценке.` }
+    : feedbackFor(current.evaluation, current.typedAnswer);
+
+  const result = $('feedback-panel').querySelector('.feedback-result');
+  result.classList.toggle('is-wrong', feedback.tone === 'wrong');
+  result.classList.toggle('is-almost', feedback.tone === 'almost');
+  setText('feedback-icon', feedback.icon);
+  setText('feedback-title', feedback.title);
+  setText('feedback-copy', feedback.copy);
+
+  const overrideButton = $('accept-answer-button');
+  if (overrideButton) {
+    overrideButton.hidden = current.evaluation.accepted;
+    overrideButton.textContent = current.manualOverride ? 'Отменить зачёт' : 'Засчитать ответ';
+    overrideButton.setAttribute('aria-pressed', String(current.manualOverride));
+  }
+  const capNote = $('rating-cap-note');
+  if (capNote) capNote.hidden = current.accepted;
+
+  $$('.rating-button').forEach((button) => button.classList.remove('is-suggested'));
+  const suggested = document.querySelector(`[data-rating="${current.suggestedRating}"]`);
+  suggested?.classList.add('is-suggested');
+  return { feedback, suggested };
+}
+
+function toggleManualAcceptance() {
+  const session = runtime.study;
+  const current = session?.current;
+  if (!current || session.phase !== 'rating' || current.evaluation.accepted) return;
+
+  current.manualOverride = !current.manualOverride;
+  current.accepted = current.manualOverride || current.evaluation.accepted;
+  current.suggestedRating = suggestedRatingFor(current);
+  const { suggested } = renderAnswerVerdict();
+  suggested?.focus({ preventScroll: true });
+  announce(current.manualOverride
+    ? `Ответ засчитан вручную. Рекомендуемая оценка: ${ratingLabel(current.suggestedRating)}`
+    : `Зачёт отменён. Рекомендуемая оценка: ${ratingLabel(current.suggestedRating)}`);
 }
 
 function checkCurrentAnswer(event) {
@@ -890,17 +945,12 @@ function checkCurrentAnswer(event) {
   const evaluation = evaluateAnswer(typedAnswer, current.expected, appState.settings);
   current.typedAnswer = typedAnswer;
   current.evaluation = evaluation;
+  current.manualOverride = false;
+  current.accepted = evaluation.accepted;
   current.responseMs = Math.max(0, Math.round(performance.now() - current.startedAt));
-  current.suggestedRating = evaluation.accepted ? (current.hintUsed ? 1 : 2) : evaluation.status === 'almost' ? 1 : 0;
+  current.suggestedRating = suggestedRatingFor(current);
   session.phase = 'rating';
 
-  const feedback = feedbackFor(evaluation, typedAnswer);
-  const result = $('feedback-panel').querySelector('.feedback-result');
-  result.classList.toggle('is-wrong', feedback.tone === 'wrong');
-  result.classList.toggle('is-almost', feedback.tone === 'almost');
-  setText('feedback-icon', feedback.icon);
-  setText('feedback-title', feedback.title);
-  setText('feedback-copy', feedback.copy);
   setText('expected-answer', current.expected);
   const example = current.word.example || current.word.notes;
   $('card-example').hidden = !example;
@@ -908,8 +958,8 @@ function checkCurrentAnswer(event) {
   $('answer-input').disabled = true;
   $('check-answer-button').disabled = true;
   $('feedback-panel').hidden = false;
-  const suggested = document.querySelector(`[data-rating="${current.suggestedRating}"]`);
-  suggested?.classList.add('is-suggested');
+
+  const { feedback, suggested } = renderAnswerVerdict();
   suggested?.focus({ preventScroll: true });
   announce(`${feedback.title}. Правильный ответ: ${current.expected}`);
 }
@@ -927,13 +977,14 @@ function rateCurrent(rating) {
   const previous = appState.progress[current.word.id] || createEmptyProgress(current.word.id);
   const wasNew = !previous.totalReviews;
   const reviewedAt = new Date().toISOString();
+  const answerStatus = current.manualOverride ? 'correct-manual' : current.evaluation.status;
   const next = applyReview(previous, {
     wordId: current.word.id,
     rating,
     responseMs: current.responseMs,
     direction: current.direction,
-    typedCorrect: current.evaluation.accepted,
-    answerStatus: current.evaluation.status,
+    typedCorrect: current.accepted,
+    answerStatus,
   }, Date.now());
 
   const review = {
@@ -943,8 +994,10 @@ function rateCurrent(rating) {
     prompt: current.prompt,
     expectedAnswer: current.expected,
     typedAnswer: current.typedAnswer,
-    answerStatus: current.evaluation.status,
-    typedCorrect: current.evaluation.accepted,
+    answerStatus,
+    typedCorrect: current.accepted,
+    manualOverride: current.manualOverride,
+    autoStatus: current.evaluation.status,
     rating: Number(rating),
     ratingLabel: ratingLabel(rating),
     responseMs: current.responseMs,
@@ -964,7 +1017,7 @@ function rateCurrent(rating) {
   persistState();
 
   session.reviewed += 1;
-  session.accepted += current.evaluation.accepted ? 1 : 0;
+  session.accepted += current.accepted ? 1 : 0;
   session.newCount += wasNew ? 1 : 0;
   if (Number(rating) === 0) {
     const insertAt = Math.min(2, session.queue.length);
@@ -1400,6 +1453,7 @@ function bindEvents() {
   $('exit-study-button').addEventListener('click', exitStudy);
   $('answer-form').addEventListener('submit', checkCurrentAnswer);
   $('hint-button').addEventListener('click', showHint);
+  $('accept-answer-button').addEventListener('click', toggleManualAcceptance);
   $$('.rating-button').forEach((button) => button.addEventListener('click', () => rateCurrent(Number(button.dataset.rating))));
 
   $('word-search').addEventListener('input', renderWords);
@@ -1438,6 +1492,11 @@ function bindEvents() {
 
   document.addEventListener('keydown', (event) => {
     if (runtime.currentView !== 'study' || runtime.study?.phase !== 'rating') return;
+    if (event.key === '0') {
+      event.preventDefault();
+      toggleManualAcceptance();
+      return;
+    }
     if (/^[1-4]$/.test(event.key)) {
       event.preventDefault();
       rateCurrent(Number(event.key) - 1);

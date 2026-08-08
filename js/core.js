@@ -1,6 +1,11 @@
 const DAY_MS = 86_400_000;
 const MINUTE_MS = 60_000;
 
+// Неверно введённый ответ не может дать интервал больше, чем оценка «Трудно»,
+// даже если выбрана «Хорошо» или «Легко». Кнопка «Засчитать ответ» на карточке
+// снимает это ограничение, когда перевод верен по смыслу.
+export const MAX_RATING_WITHOUT_TYPED_ANSWER = 1;
+
 export const DEFAULT_LEARNING_SETTINGS = Object.freeze({
   dailyNewLimit: 20,
   dailyReviewLimit: 200,
@@ -561,9 +566,10 @@ export function applyReview(progressInput, review, now = Date.now()) {
   const responseMs = Math.max(0, Number(review.responseMs) || 0);
   const direction = review.direction === 'ru-es' ? 'ru-es' : 'es-ru';
   const typedCorrect = Boolean(review.typedCorrect);
-  const successful = rating > 0;
+  const effectiveRating = typedCorrect ? rating : Math.min(rating, MAX_RATING_WITHOUT_TYPED_ANSWER);
+  const successful = rating > 0 && typedCorrect;
   const at = new Date(now).toISOString();
-  const scheduled = nextInterval(progress, rating);
+  const scheduled = nextInterval(progress, effectiveRating);
   const intervalDays = clamp(scheduled.intervalDays, 1 / 1440, 36_500);
 
   progress.wordId = review.wordId || progress.wordId;
@@ -591,9 +597,23 @@ export function applyReview(progressInput, review, now = Date.now()) {
     totalResponseMs: (Number(directionCurrent.totalResponseMs) || 0) + responseMs,
   };
 
+  // Статус повышается только после верно введённого ответа: одна оценка без
+  // правильного ввода больше не переводит слово в «выучено» или «освоено».
   const passRate = progress.totalReviews ? progress.successfulReviews / progress.totalReviews : 0;
-  if (!progress.learnedAt && progress.repetitions >= 2 && progress.intervalDays >= 3) progress.learnedAt = at;
-  if (!progress.masteredAt && progress.repetitions >= 4 && progress.intervalDays >= 14 && passRate >= 0.75) progress.masteredAt = at;
+  const typedCorrectTotal = Number(progress.typedCorrectReviews) || 0;
+  if (
+    !progress.learnedAt && typedCorrect
+    && typedCorrectTotal >= 2 && progress.repetitions >= 2 && progress.intervalDays >= 3
+  ) {
+    progress.learnedAt = at;
+  }
+  if (
+    !progress.masteredAt && typedCorrect
+    && typedCorrectTotal >= 4 && progress.repetitions >= 4
+    && progress.intervalDays >= 14 && passRate >= 0.75
+  ) {
+    progress.masteredAt = at;
+  }
 
   if (progress.masteredAt) progress.state = 'mastered';
   else if (progress.intervalDays >= 1) progress.state = 'review';
@@ -677,8 +697,8 @@ export function updateDailyAggregate(current, review, timeZone = DEFAULT_LEARNIN
 
   const direction = review.direction === 'ru-es' ? 'ru-es' : 'es-ru';
   const directionStats = { ...base.directions[direction], ...(aggregate.directions[direction] || {}) };
-  const successful = Number(review.rating) > 0;
   const typedCorrect = Boolean(review.typedCorrect);
+  const successful = Number(review.rating) > 0 && typedCorrect;
 
   aggregate.reviews += 1;
   aggregate.successful += successful ? 1 : 0;

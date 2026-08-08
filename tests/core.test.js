@@ -130,6 +130,88 @@ test('again creates a short relearning interval and records a lapse', () => {
   assert.equal(progress.lapses, 1);
 });
 
+test('a wrong typed answer cannot buy a full interval with a high rating', () => {
+  const start = Date.UTC(2026, 0, 1, 12);
+  const base = { wordId: 'word-4', rating: 3, responseMs: 3000, direction: 'es-ru' };
+
+  const wrong = applyReview(createEmptyProgress('word-4'), { ...base, typedCorrect: false }, start);
+  assert.ok(wrong.intervalDays < 1, 'неверный ответ остаётся в пределах текущей сессии');
+  assert.equal(wrong.state, 'learning');
+  assert.equal(wrong.successfulReviews, 0);
+  assert.equal(wrong.typedCorrectReviews, 0);
+  assert.equal(wrong.learnedAt, null);
+  assert.equal(wrong.lapses, 0);
+
+  const accepted = applyReview(createEmptyProgress('word-4'), { ...base, typedCorrect: true }, start);
+  assert.equal(accepted.intervalDays, 4);
+  assert.equal(accepted.state, 'review');
+  assert.equal(accepted.successfulReviews, 1);
+});
+
+test('manual acceptance gives the answer full credit and is recorded', () => {
+  const start = Date.UTC(2026, 0, 1, 12);
+  const accepted = applyReview(createEmptyProgress('word-5'), {
+    wordId: 'word-5',
+    rating: 2,
+    responseMs: 2000,
+    direction: 'ru-es',
+    typedCorrect: true,
+    answerStatus: 'correct-manual',
+  }, start);
+
+  assert.equal(accepted.intervalDays, 1);
+  assert.equal(accepted.successfulReviews, 1);
+  assert.equal(accepted.typedCorrectReviews, 1);
+  assert.equal(accepted.lastAnswerStatus, 'correct-manual');
+  assert.equal(accepted.directionStats['ru-es'].successes, 1);
+  assert.equal(accepted.directionStats['ru-es'].typedCorrect, 1);
+});
+
+test('ratings alone never promote a word to learned or mastered', () => {
+  const start = Date.UTC(2026, 0, 1, 12);
+  let progress = createEmptyProgress('word-6');
+  for (let index = 0; index < 4; index += 1) {
+    progress = applyReview(progress, {
+      wordId: 'word-6', rating: 3, responseMs: 2000, direction: 'es-ru', typedCorrect: false,
+    }, start + index * 86_400_000);
+  }
+
+  assert.equal(progress.totalReviews, 4);
+  assert.equal(progress.typedCorrectReviews, 0);
+  assert.equal(progress.learnedAt, null);
+  assert.equal(progress.masteredAt, null);
+  assert.equal(progress.state, 'learning');
+});
+
+test('learned status requires two correctly typed answers, not just two ratings', () => {
+  const start = Date.UTC(2026, 0, 1, 12);
+  let progress = applyReview(createEmptyProgress('word-7'), {
+    wordId: 'word-7', rating: 2, responseMs: 2000, direction: 'es-ru', typedCorrect: true,
+  }, start);
+  progress = applyReview(progress, {
+    wordId: 'word-7', rating: 2, responseMs: 2000, direction: 'es-ru', typedCorrect: false,
+  }, start + 86_400_000);
+
+  assert.equal(progress.typedCorrectReviews, 1);
+  assert.equal(progress.learnedAt, null);
+});
+
+test('daily aggregate does not count a wrong answer as successful', () => {
+  const daily = updateDailyAggregate(null, {
+    wordId: 'word-8',
+    rating: 3,
+    typedCorrect: false,
+    direction: 'es-ru',
+    responseMs: 1000,
+    reviewedAt: '2026-08-03T10:00:00.000Z',
+  }, 'UTC');
+
+  assert.equal(daily.reviews, 1);
+  assert.equal(daily.successful, 0);
+  assert.equal(daily.typedCorrect, 0);
+  assert.equal(daily.directions['es-ru'].successful, 0);
+});
+
 test('adaptive direction prefers the weaker side while remaining random', () => {
   const progress = createEmptyProgress('word-3');
   progress.directionStats['es-ru'] = { reviews: 10, successes: 3, typedCorrect: 2, totalResponseMs: 120000 };
