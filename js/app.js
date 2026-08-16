@@ -37,6 +37,10 @@ const DEFAULTS = {
 };
 
 const SHARED_SHEET_STORAGE_KEY = 'palabra:shared-sheet:v1';
+// Бамп этой версии заставляет устройства с уже сохранённым старым словарём
+// один раз перечитать Google Sheets. Это важно для метаданных (артикль и
+// часть речи), которые в старых локальных копиях могли отсутствовать.
+const VOCABULARY_IMPORT_VERSION = 2;
 const SHEETS_ADMIN_UID = String(APP_CONFIG.sheetsAdminUid || '');
 const SHEETS_ADMIN_NAME = String(APP_CONFIG.sheetsAdminName || 'администратор');
 
@@ -198,6 +202,10 @@ function applySharedSheetSettings(candidate, { persist = true } = {}) {
 function vocabularyMatchesSharedSheet(state = appState) {
   const expectedKey = sharedSheetKey(runtime.sheetSettings);
   if (String(state.vocabulary?.sourceKey || '').startsWith('local-csv:')) return true;
+  if (
+    state.vocabulary?.words?.length
+    && Number(state.vocabulary?.importVersion || 0) < VOCABULARY_IMPORT_VERSION
+  ) return false;
   if (state.vocabulary?.sourceKey) return state.vocabulary.sourceKey === expectedKey;
   return Boolean(
     state.vocabulary?.words?.length
@@ -706,6 +714,7 @@ async function syncVocabulary({ silent = false } = {}) {
     });
     appState.vocabulary = {
       words: result.words,
+      importVersion: VOCABULARY_IMPORT_VERSION,
       sourceUrl: source.sheetUrl || '',
       sourceSheetName: source.sheetName || '',
       sourceKey: sharedSheetKey(source),
@@ -732,6 +741,7 @@ async function importCsv(file) {
     const result = await loadWordsFromFile(file);
     appState.vocabulary = {
       words: result.words,
+      importVersion: VOCABULARY_IMPORT_VERSION,
       sourceUrl: '',
       sourceSheetName: '',
       sourceKey: `local-csv:${file?.name || 'file'}`,
@@ -882,6 +892,28 @@ function feedbackFor(evaluation, typedAnswer) {
   return { tone: 'wrong', icon: '×', title: 'Пока неверно', copy: typedAnswer ? `Ваш ответ: «${typedAnswer}».` : 'Ответ не был введён.' };
 }
 
+function isNoun(word) {
+  const part = normalizeText(word?.partOfSpeech || '', {
+    stripAccents: true,
+    ignoreSpecialCharacters: true,
+  });
+  return /(^|\s)(существительное|сущ|noun|sustantivo|nombre)(\s|$)/iu.test(part);
+}
+
+function expectedAnswerForDisplay(current) {
+  if (!current) return '';
+  const expected = String(current.expected || '').trim();
+  const article = String(current.word?.article || '').trim();
+  if (current.direction !== 'ru-es' || !article || !isNoun(current.word)) return expected;
+
+  const normalizedExpected = normalizeText(expected, { stripAccents: true });
+  const normalizedArticle = normalizeText(article, { stripAccents: true });
+  if (normalizedExpected === normalizedArticle || normalizedExpected.startsWith(`${normalizedArticle} `)) {
+    return expected;
+  }
+  return `${article} ${expected}`.trim();
+}
+
 // Рисует вердикт по текущему ответу: сам автоматический разбор, кнопку ручного
 // зачёта и подсказку об ограничении интервала. Вызывается и после проверки,
 // и после переключения ручного зачёта.
@@ -951,7 +983,8 @@ function checkCurrentAnswer(event) {
   current.suggestedRating = suggestedRatingFor(current);
   session.phase = 'rating';
 
-  setText('expected-answer', current.expected);
+  const expectedDisplay = expectedAnswerForDisplay(current);
+  setText('expected-answer', expectedDisplay);
   const example = current.word.example || current.word.notes;
   $('card-example').hidden = !example;
   setText('card-example', example ? `Пример: ${example}` : '');
@@ -961,7 +994,7 @@ function checkCurrentAnswer(event) {
 
   const { feedback, suggested } = renderAnswerVerdict();
   suggested?.focus({ preventScroll: true });
-  announce(`${feedback.title}. Правильный ответ: ${current.expected}`);
+  announce(`${feedback.title}. Правильный ответ: ${expectedDisplay}`);
 }
 
 function createReviewId() {
@@ -1517,7 +1550,8 @@ function bindEvents() {
 async function registerServiceWorker() {
   if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
   try {
-    await navigator.serviceWorker.register('./sw.js');
+    const registration = await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' });
+    await registration.update();
   } catch (error) {
     console.warn('Service worker:', error);
   }

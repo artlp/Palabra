@@ -160,8 +160,8 @@ code { padding: 0.1em 0.35em; border-radius: 6px; background: var(--surface-stro
 .metric-card > div > span { color: var(--text-muted); font-size: .76rem; font-weight: 700; }
 .metric-card strong { margin-top: 7px; font-size: 1.65rem; letter-spacing: -.04em; }
 .metric-card small { margin-top: 4px; color: var(--text-faint); font-size: .7rem; }
-.metric-icon { display: inline-grid; place-items: center; flex: 0 0 auto; width: 42px; height: 42px; border-radius: 13px; line-height: 0; }
-.metric-icon > svg { place-self: center; width: 18px; height: 18px; margin: 0; }
+.metric-card .metric-icon { display: inline-grid; place-items: center; flex: 0 0 auto; width: 42px; height: 42px; border-radius: 13px; line-height: 0; }
+.metric-card .metric-icon > svg { place-self: center; width: 18px; height: 18px; margin: 0; }
 .metric-icon.accent { background: var(--accent-soft); color: var(--accent-strong); }
 .metric-icon.success { background: var(--success-soft); color: var(--success); }
 .metric-icon.warm { background: var(--warning-soft); color: var(--warning); }

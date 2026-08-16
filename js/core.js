@@ -140,6 +140,7 @@ function canonicalHeader(value) {
 
 const HEADER_ALIASES = Object.freeze({
   id: ['id', 'key', 'uid', 'идентификатор'],
+  article: ['article', 'articulo', 'артикль'],
   spanish: [
     'spanish', 'espanol', 'es', 'palabra', 'palabra espanola', 'termino',
     'испанский', 'испанское слово', 'слово на испанском', 'слово испанский',
@@ -168,9 +169,14 @@ export function detectColumns(headers) {
     && russianHeaders.has(normalized[2]);
 
   // Пользовательский формат: A «Артикль», B «Испанский», C «Перевод»,
-  // D «Часть речи». Артикль остаётся справочным, а часть речи импортируется.
+  // D «Часть речи». Артикль и часть речи импортируются как метаданные слова.
   if (isArticleSpanishTranslationLayout) {
-    return { spanish: 1, russian: 2, partOfSpeech: headers.length >= 4 ? 3 : undefined };
+    return {
+      article: 0,
+      spanish: 1,
+      russian: 2,
+      partOfSpeech: headers.length >= 4 ? 3 : undefined,
+    };
   }
 
   const result = {};
@@ -218,6 +224,7 @@ export function tableToWords(headers, rows) {
     const russian = String(row?.[columns.russian] ?? '').trim();
     if (!spanish || !russian) return;
 
+    const article = columns.article === undefined ? '' : String(row?.[columns.article] ?? '').trim();
     const partOfSpeech = String(row?.[columns.partOfSpeech] ?? '').trim() || 'не указано';
     const explicitId = columns.id === undefined ? '' : String(row?.[columns.id] ?? '').trim();
     const fingerprint = `${normalizeText(spanish, { stripAccents: true })}|${normalizeText(russian, { stripAccents: true })}`;
@@ -227,6 +234,7 @@ export function tableToWords(headers, rows) {
 
     words.push({
       id,
+      article,
       spanish,
       russian,
       partOfSpeech,

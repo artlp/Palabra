@@ -45,9 +45,11 @@ test('four-column user layout imports columns B, C and D', () => {
   ]);
 
   assert.equal(first.length, 1);
+  assert.equal(first[0].article, 'el');
   assert.equal(first[0].spanish, 'nosotros');
   assert.equal(first[0].russian, 'мы (мужской род или смешанная группа)');
   assert.equal(first[0].partOfSpeech, 'местоимение');
+  assert.equal(changedMetadata[0].article, 'los');
   assert.equal(changedMetadata[0].partOfSpeech, 'другая категория');
   assert.equal(first[0].id, changedMetadata[0].id);
 });
