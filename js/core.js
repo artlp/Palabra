@@ -213,6 +213,11 @@ export function stableHash(value) {
   return (hash >>> 0).toString(36);
 }
 
+function requiredVocabularyCell(value) {
+  // Treat whitespace and common invisible spreadsheet characters as empty.
+  return String(value ?? '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+}
+
 export function tableToWords(headers, rows) {
   if (!Array.isArray(headers) || !Array.isArray(rows)) return [];
   const columns = detectColumns(headers);
@@ -220,8 +225,9 @@ export function tableToWords(headers, rows) {
   const words = [];
 
   rows.forEach((row, sourceIndex) => {
-    const spanish = String(row?.[columns.spanish] ?? '').trim();
-    const russian = String(row?.[columns.russian] ?? '').trim();
+    const spanish = requiredVocabularyCell(row?.[columns.spanish]);
+    const russian = requiredVocabularyCell(row?.[columns.russian]);
+    // Half-finished Sheet/CSV rows never become dictionary entries.
     if (!spanish || !russian) return;
 
     const article = columns.article === undefined ? '' : String(row?.[columns.article] ?? '').trim();

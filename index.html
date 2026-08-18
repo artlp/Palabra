@@ -334,19 +334,14 @@
                 <input id="sheet-name-input" type="text" placeholder="Слова">
               </label>
               <div class="form-actions">
-                <button class="button button-primary" id="save-source-button" type="submit">Сохранить источник и опубликовать слова</button>
+                <button class="button button-primary" id="save-source-button" type="submit">Сохранить источник и обновить общий словарь</button>
               </div>
             </form>
           </article>
 
-          <article class="panel settings-panel" id="local-import-panel">
-            <div class="panel-heading"><div><span class="panel-kicker">Словарь</span><h3>Обновление и локальный CSV</h3></div></div>
-            <p class="settings-intro">Общий словарь загружается без раскрытия настроек его источника. CSV-файл заменяет словарь только в текущем профиле браузера.</p>
-            <div class="form-actions">
-              <button class="button button-ghost" id="settings-sync-button" type="button">Обновить общий словарь</button>
-              <label class="button button-ghost file-button">Импортировать CSV<input id="csv-file-input" type="file" accept=".csv,text/csv,text/plain"></label>
-            </div>
-            <div class="source-status" id="source-status"></div>
+          <article class="panel settings-panel" id="dictionary-status-panel">
+            <div class="panel-heading"><div><span class="panel-kicker">Словарь</span><h3>Общий словарь</h3></div></div>
+            <div class="source-status" id="source-status">0 слов в словаре.</div>
           </article>
 
           <article class="panel settings-panel">

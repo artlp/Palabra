@@ -100,18 +100,37 @@ test('Google Sheets metadata is admin-only and public users receive only parsed 
 
   assert.match(adapter, /async function loadPublishedVocabulary/);
   assert.match(adapter, /async function publishVocabulary/);
+
+  const syncStart = app.indexOf('async function syncVocabulary');
+  const publishStart = app.indexOf('async function publishVocabularyFromSheet');
+  const nextFunction = app.indexOf('function nextCardStateLabel', publishStart);
+  assert.ok(syncStart >= 0 && publishStart > syncStart && nextFunction > publishStart);
+  const loginSyncBlock = app.slice(syncStart, publishStart);
+  const adminPublishBlock = app.slice(publishStart, nextFunction);
+  assert.match(loginSyncBlock, /loadPublishedVocabulary/);
+  assert.doesNotMatch(loginSyncBlock, /loadWordsFromSource\(source\.sheetUrl/);
+  assert.doesNotMatch(loginSyncBlock, /publishVocabulary\(/);
+  assert.match(adminPublishBlock, /isSheetsAdmin\(\)/);
+  assert.match(adminPublishBlock, /loadWordsFromSource\(source\.sheetUrl/);
+  assert.match(adminPublishBlock, /publishVocabulary\(runtime\.user, result\.words\)/);
   assert.match(adapter, /browserSessionPersistence/);
   assert.doesNotMatch(adapter, /browserLocalPersistence/);
   assert.match(adapter, /doc\(db, 'appSettings', 'googleSheets'\)/);
   assert.match(adapter, /doc\(db, 'appData', 'vocabulary'\)/);
   assert.match(app, /if \(!isSheetsAdmin\(\)\) \{\s*applySharedSheetSettings/);
-  assert.match(app, /runtime\.firebase\.publishVocabulary\(runtime\.user, result\.words\)/);
+  assert.match(app, /await publishVocabularyFromSheet\(\{ silent: true \}\)/);
   assert.match(html, /id="source-settings-panel" hidden/);
   assert.match(html, /id="reset-progress-panel" hidden/);
+  assert.match(html, /id="dictionary-status-panel"/);
+  assert.doesNotMatch(html, /id="csv-file-input"/);
+  assert.doesNotMatch(html, /id="settings-sync-button"/);
 
   assert.doesNotMatch(app, /copyGuestIntoAccount/);
   assert.doesNotMatch(app, /guestState\.settings/);
   assert.match(localStore, /profileStorage\(profileKey = 'guest'\)/);
   assert.match(localStore, /\? localStorage : sessionStorage/);
   assert.match(localStore, /localStorage\.removeItem\(LEGACY_SHARED_SHEET_STORAGE_KEY\)/);
+  assert.match(localStore, /palabra:global-vocabulary:v1/);
+  assert.match(localStore, /personalSnapshot\.vocabulary = emptyVocabulary\(\)/);
+  assert.doesNotMatch(localStore, /startsWith\('local-csv:'\)/);
 });

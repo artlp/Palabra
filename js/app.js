@@ -16,7 +16,7 @@ import {
   ratingLabel,
   updateDailyAggregate,
 } from './core.js';
-import { loadWordsFromFile, loadWordsFromSource } from './sheets.js';
+import { loadWordsFromSource } from './sheets.js';
 import {
   appendRecentReview,
   clearLocalState,
@@ -156,9 +156,6 @@ function applySharedSheetSettings(candidate) {
   runtime.sheetSettingsLoaded = true;
 }
 
-function isLocalCsvVocabulary(state = appState) {
-  return String(state.vocabulary?.sourceKey || '').startsWith('local-csv:');
-}
 
 function setVocabularyState(words, {
   sourceKey = '',
@@ -220,7 +217,6 @@ async function refreshSharedSheetSettings({ silent = false } = {}) {
 
 async function refreshAndSyncVocabulary({ silent = false } = {}) {
   if (runtime.vocabularyBusy) return;
-  if (isSheetsAdmin()) await refreshSharedSheetSettings({ silent: true });
   await syncVocabulary({ silent });
 }
 
@@ -465,7 +461,7 @@ function renderDashboard() {
   } else {
     const nextDue = nextFutureDue();
     setText('next-focus-title', nextDue ? `Следующее повторение ${formatRelativeDue(nextDue)}` : 'Карточек пока нет');
-    setText('next-focus-copy', analytics.totalWords ? 'Можно посмотреть аналитику или обновить словарь.' : 'Обновите общий словарь или загрузите CSV.');
+    setText('next-focus-copy', analytics.totalWords ? 'Можно посмотреть аналитику или обновить словарь.' : 'Общий словарь пока пуст.');
   }
 
   const hardest = analytics.hardest.slice(0, 3);
@@ -575,13 +571,21 @@ function setFormValue(id, value) {
 function renderSourceStatus() {
   const element = $('source-status');
   if (!element) return;
+  const wordCount = appState.vocabulary.words.length;
+
+  // Non-admin users only see the size of the shared dictionary. They never see
+  // Google Sheets metadata, source type, sheet name, URL, or admin status text.
+  if (!isSheetsAdmin()) {
+    element.className = 'source-status';
+    element.textContent = `${wordCount} ${pluralize(wordCount, ['слово', 'слова', 'слов'])} в словаре.`;
+    return;
+  }
+
   element.className = `source-status${runtime.sourceMessageType ? ` is-${runtime.sourceMessageType}` : ''}`;
   if (runtime.lastSourceMessage) {
     element.textContent = runtime.lastSourceMessage;
-  } else if (appState.vocabulary.words.length) {
-    element.textContent = `${appState.vocabulary.words.length} слов · ${appState.vocabulary.sourceType || 'источник'} · обновлено ${formatDateTime(appState.vocabulary.syncedAt)}`;
   } else {
-    element.textContent = 'Источник ещё не загружен.';
+    element.textContent = `${wordCount} ${pluralize(wordCount, ['слово', 'слова', 'слов'])} в общем словаре.`;
   }
 }
 
@@ -652,24 +656,10 @@ async function syncVocabulary({ silent = false } = {}) {
   if (runtime.vocabularyBusy) return;
   runtime.vocabularyBusy = true;
   $('sync-button-top')?.classList.add('is-spinning');
-  sourceMessage('Загружаем словарь…');
+  sourceMessage('Загружаем общий словарь…');
 
   try {
-    if (runtime.firebase && isSheetsAdmin()) {
-      const source = runtime.sheetSettings;
-      const result = await loadWordsFromSource(source.sheetUrl, {
-        sheetName: source.sheetName,
-        fallbackUrl: './data/demo-words.csv',
-      });
-      const published = await runtime.firebase.publishVocabulary(runtime.user, result.words);
-      setVocabularyState(result.words, {
-        sourceKey: `public:${published.publishedAt || result.syncedAt}`,
-        sourceType: source.sheetUrl ? 'Общий словарь' : 'Демо-словарь',
-        syncedAt: result.syncedAt,
-        publishedAt: published.publishedAt || result.syncedAt,
-      });
-      sourceMessage(`${result.words.length} слов обновлено и опубликовано без данных Google Sheets.`, 'success');
-    } else if (runtime.firebase?.loadPublishedVocabulary) {
+    if (runtime.firebase?.loadPublishedVocabulary) {
       let published;
       try {
         published = await runtime.firebase.loadPublishedVocabulary();
@@ -684,7 +674,7 @@ async function syncVocabulary({ silent = false } = {}) {
           syncedAt: new Date().toISOString(),
           publishedAt: published.publishedAt,
         });
-        sourceMessage(`${published.words.length} слов загружено из общего словаря.`, 'success');
+        sourceMessage(`${published.words.length} слов в общем словаре.`, 'success');
       } else {
         const demo = await loadWordsFromSource('', { fallbackUrl: './data/demo-words.csv' });
         setVocabularyState(demo.words, {
@@ -692,7 +682,7 @@ async function syncVocabulary({ silent = false } = {}) {
           sourceType: 'Демо-словарь',
           syncedAt: demo.syncedAt,
         });
-        sourceMessage(`${demo.words.length} слов загружено из демо-словаря.`, 'success');
+        sourceMessage(`${demo.words.length} слов в демо-словаре.`, 'success');
       }
     } else {
       const demo = await loadWordsFromSource('', { fallbackUrl: './data/demo-words.csv' });
@@ -701,7 +691,7 @@ async function syncVocabulary({ silent = false } = {}) {
         sourceType: 'Демо-словарь',
         syncedAt: demo.syncedAt,
       });
-      sourceMessage(`${demo.words.length} слов загружено из демо-словаря.`, 'success');
+      sourceMessage(`${demo.words.length} слов в демо-словаре.`, 'success');
     }
 
     renderGlobal();
@@ -716,23 +706,42 @@ async function syncVocabulary({ silent = false } = {}) {
   }
 }
 
-async function importCsv(file) {
+async function publishVocabularyFromSheet({ silent = false } = {}) {
+  if (!runtime.firebase || !runtime.user || !isSheetsAdmin()) {
+    if (!silent) toast(`Обновлять Google Sheets может только ${SHEETS_ADMIN_NAME}.`, 'error', 6000);
+    return false;
+  }
+  if (runtime.vocabularyBusy) return false;
+
+  runtime.vocabularyBusy = true;
+  $('sync-button-top')?.classList.add('is-spinning');
+  sourceMessage('Обновляем общий словарь из Google Sheets…');
+
   try {
-    sourceMessage('Читаем CSV…');
-    const result = await loadWordsFromFile(file);
-    setVocabularyState(result.words, {
-      sourceKey: `local-csv:${file?.name || 'file'}`,
-      sourceType: result.sourceType,
-      syncedAt: result.syncedAt,
+    const source = runtime.sheetSettings;
+    const result = await loadWordsFromSource(source.sheetUrl, {
+      sheetName: source.sheetName,
+      fallbackUrl: './data/demo-words.csv',
     });
-    sourceMessage(`${result.words.length} слов загружено из локального CSV.`, 'success');
+    const published = await runtime.firebase.publishVocabulary(runtime.user, result.words);
+    setVocabularyState(result.words, {
+      sourceKey: `public:${published.publishedAt || result.syncedAt}`,
+      sourceType: source.sheetUrl ? 'Общий словарь' : 'Демо-словарь',
+      syncedAt: result.syncedAt,
+      publishedAt: published.publishedAt || result.syncedAt,
+    });
+    sourceMessage(`${result.words.length} слов в общем словаре.`, 'success');
     renderGlobal();
-    toast('CSV импортирован только в текущий профиль браузера.', 'success', 6000);
+    if (!silent) toast(`Общий словарь обновлён: ${result.words.length} слов.`, 'success');
+    return true;
   } catch (error) {
-    sourceMessage(error.message || 'Ошибка CSV.', 'error');
-    toast(error.message || 'Ошибка CSV.', 'error');
+    console.error(error);
+    sourceMessage(error.message || 'Не удалось обновить словарь из Google Sheets.', 'error');
+    if (!silent) toast(error.message || 'Не удалось обновить словарь из Google Sheets.', 'error');
+    return false;
   } finally {
-    $('csv-file-input').value = '';
+    runtime.vocabularyBusy = false;
+    $('sync-button-top')?.classList.remove('is-spinning');
   }
 }
 
@@ -1282,7 +1291,7 @@ async function handleAuthChange(user) {
     persistState();
     applyTheme();
     if ($('auth-dialog').open) $('auth-dialog').close();
-    if (!isLocalCsvVocabulary()) await syncVocabulary({ silent: true });
+    await syncVocabulary({ silent: true });
     if (sequence !== runtime.authSequence) return;
     renderGlobal();
     return;
@@ -1304,14 +1313,9 @@ async function handleAuthChange(user) {
     if (sequence !== runtime.authSequence) return;
 
     // A successful Firestore read is authoritative for personal settings/progress.
-    // Browser cache is used only for the vocabulary and as an offline fallback.
+    // Personal settings/progress come from this UID; the vocabulary cache is global.
     const remoteOnly = mergeStates(createDefaultState(), remoteState);
-    if (localAccount.vocabulary?.words?.length) {
-      const key = String(localAccount.vocabulary.sourceKey || '');
-      if (key.startsWith('local-csv:') || key.startsWith('public:')) {
-        remoteOnly.vocabulary = localAccount.vocabulary;
-      }
-    }
+    remoteOnly.vocabulary = localAccount.vocabulary;
     appState = remoteOnly;
     persistState();
     applyTheme();
@@ -1320,7 +1324,7 @@ async function handleAuthChange(user) {
     await runtime.firebase.saveProfile(user, appState);
     if (sequence !== runtime.authSequence) return;
 
-    if (!isLocalCsvVocabulary()) await syncVocabulary({ silent: true });
+    await syncVocabulary({ silent: true });
     if (sequence !== runtime.authSequence) return;
     appState.meta.lastRemoteSyncAt = new Date().toISOString();
     persistState();
@@ -1355,7 +1359,7 @@ async function initializeFirebase() {
   if (!isFirebaseConfigured()) {
     runtime.firebaseStatus = 'disabled';
     runtime.sheetSettingsLoaded = true;
-    if (!isLocalCsvVocabulary() && !appState.vocabulary.words.length) {
+    if (!appState.vocabulary.words.length) {
       await syncVocabulary({ silent: true });
     }
     renderAccount();
@@ -1374,7 +1378,7 @@ async function initializeFirebase() {
     runtime.firebaseStatus = 'error';
     runtime.firebaseError = error.message || 'Не удалось инициализировать Firebase';
     runtime.sheetSettingsLoaded = true;
-    if (!isLocalCsvVocabulary() && !appState.vocabulary.words.length) {
+    if (!appState.vocabulary.words.length) {
       await syncVocabulary({ silent: true });
     }
     renderAccount();
@@ -1408,8 +1412,12 @@ async function handleSourceSettings(event) {
   try {
     const saved = await runtime.firebase.saveSheetSettings(runtime.user, nextSettings);
     applySharedSheetSettings(saved);
-    await syncVocabulary({ silent: true });
-    toast('Приватный источник сохранён; пользователям опубликованы только слова.', 'success', 6000);
+    const updated = await publishVocabularyFromSheet({ silent: true });
+    if (updated) {
+      toast('Источник сохранён, общий словарь обновлён для всех пользователей.', 'success', 6000);
+    } else {
+      toast('Источник сохранён, но словарь не удалось обновить. Проверьте доступ к Google Sheets.', 'warning', 8000);
+    }
   } catch (error) {
     console.error(error);
     const permissionDenied = String(error?.code || '').includes('permission-denied');
@@ -1453,7 +1461,6 @@ function bindEvents() {
   $('sync-button-top').addEventListener('click', () => refreshAndSyncVocabulary());
   $('dashboard-sync-button').addEventListener('click', () => refreshAndSyncVocabulary());
   $('words-sync-button').addEventListener('click', () => refreshAndSyncVocabulary());
-  $('settings-sync-button').addEventListener('click', () => refreshAndSyncVocabulary());
   $('top-start-button').addEventListener('click', startStudy);
   $('start-study-button').addEventListener('click', startStudy);
   $('study-empty-start').addEventListener('click', startStudy);
@@ -1482,7 +1489,6 @@ function bindEvents() {
 
   $('source-settings-form').addEventListener('submit', handleSourceSettings);
   $('learning-settings-form').addEventListener('submit', handleLearningSettings);
-  $('csv-file-input').addEventListener('change', (event) => importCsv(event.target.files?.[0]));
   $('account-button').addEventListener('click', accountButtonAction);
   $('settings-auth-button').addEventListener('click', settingsAuthAction);
   $('export-data-button').addEventListener('click', exportData);

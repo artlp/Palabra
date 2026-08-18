@@ -106,3 +106,50 @@ test('legacy shared-sheet metadata and persistent account caches are purged', ()
   assert.equal('sourceUrl' in loadLocalState('guest').vocabulary, false);
   assert.notEqual(loadLocalState('guest').vocabulary.sourceType, 'Google Sheets');
 });
+
+test('dictionary cache is global while personal profile data stays separate', () => {
+  resetStorage();
+
+  const guest = createDefaultState();
+  guest.settings.dailyNewLimit = 4;
+  guest.vocabulary = {
+    words: [{ id: 'hola', spanish: 'hola', russian: 'привет' }],
+    importVersion: 3,
+    sourceKey: 'public:published-1',
+    sourceType: 'Общий словарь',
+    syncedAt: '2026-08-18T09:00:00.000Z',
+    publishedAt: '2026-08-18T08:59:00.000Z',
+  };
+  saveLocalState('guest', guest);
+
+  const account = createDefaultState();
+  account.settings.dailyNewLimit = 31;
+  saveLocalState('user-global-test', account);
+
+  const loadedGuest = loadLocalState('guest');
+  const loadedAccount = loadLocalState('user-global-test');
+  assert.equal(loadedGuest.settings.dailyNewLimit, 4);
+  assert.equal(loadedAccount.settings.dailyNewLimit, 31);
+  assert.equal(loadedGuest.vocabulary.words.length, 1);
+  assert.equal(loadedAccount.vocabulary.words.length, 1);
+  assert.equal(loadedAccount.vocabulary.words[0].spanish, 'hola');
+
+  const storedGuest = JSON.parse(localStorage.getItem(storageKey('guest')));
+  const storedAccount = JSON.parse(sessionStorage.getItem(storageKey('user-global-test')));
+  assert.equal(storedGuest.vocabulary.words.length, 0);
+  assert.equal(storedAccount.vocabulary.words.length, 0);
+});
+
+test('legacy local CSV cannot replace the global dictionary cache', () => {
+  resetStorage();
+
+  const localOnly = createDefaultState();
+  localOnly.vocabulary = {
+    words: [{ id: 'private', spanish: 'privado', russian: 'частный' }],
+    sourceKey: 'local-csv:private.csv',
+    sourceType: 'Локальный CSV',
+  };
+  saveLocalState('guest', localOnly);
+
+  assert.equal(loadLocalState('guest').vocabulary.words.length, 0);
+});

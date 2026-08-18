@@ -7,6 +7,7 @@ import {
 const STORAGE_PREFIX = 'palabra:v2:';
 const MAX_RECENT_REVIEWS = 800;
 const LEGACY_SHARED_SHEET_STORAGE_KEY = 'palabra:shared-sheet:v1';
+const GLOBAL_VOCABULARY_STORAGE_KEY = 'palabra:global-vocabulary:v1';
 
 function safeClone(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
@@ -24,22 +25,42 @@ function personalSettings(settings = {}) {
 
 function safeVocabulary(vocabulary = {}) {
   const sourceKey = String(vocabulary?.sourceKey || '');
-  const safeSourceKey = sourceKey.startsWith('local-csv:') || sourceKey.startsWith('public:')
-    ? sourceKey
+  const safeSourceKey = sourceKey.startsWith('public:') ? sourceKey : '';
+  const sourceType = safeSourceKey
+    ? (String(vocabulary?.sourceType || '') === 'Демо-словарь' ? 'Демо-словарь' : 'Общий словарь')
     : '';
-  const sourceType = safeSourceKey.startsWith('local-csv:')
-    ? 'Локальный CSV'
-    : safeSourceKey.startsWith('public:')
-      ? (String(vocabulary?.sourceType || '') === 'Демо-словарь' ? 'Демо-словарь' : 'Общий словарь')
-      : '';
   return {
-    words: Array.isArray(vocabulary?.words) ? vocabulary.words : [],
+    words: safeSourceKey && Array.isArray(vocabulary?.words) ? vocabulary.words : [],
     importVersion: Number(vocabulary?.importVersion || 0),
     sourceKey: safeSourceKey,
     sourceType,
     syncedAt: vocabulary?.syncedAt || null,
     publishedAt: vocabulary?.publishedAt || null,
   };
+}
+
+function emptyVocabulary() {
+  return safeVocabulary();
+}
+
+function loadGlobalVocabularyCache() {
+  try {
+    const raw = localStorage.getItem(GLOBAL_VOCABULARY_STORAGE_KEY);
+    return safeVocabulary(raw ? JSON.parse(raw) : {});
+  } catch (error) {
+    console.warn('Не удалось прочитать общий кэш словаря:', error);
+    return emptyVocabulary();
+  }
+}
+
+function saveGlobalVocabularyCache(vocabulary) {
+  const safe = safeVocabulary(vocabulary);
+  try {
+    if (safe.words.length) localStorage.setItem(GLOBAL_VOCABULARY_STORAGE_KEY, JSON.stringify(safe));
+  } catch (error) {
+    console.warn('Не удалось сохранить общий кэш словаря:', error);
+  }
+  return safe.words.length ? safe : loadGlobalVocabularyCache();
 }
 
 export function storageKey(profileKey = 'guest') {
@@ -104,29 +125,46 @@ export function loadLocalState(profileKey) {
   const key = storageKey(profileKey);
   try {
     const raw = profileStorage(profileKey).getItem(key);
-    return repairState(raw ? JSON.parse(raw) : null);
+    const state = repairState(raw ? JSON.parse(raw) : null);
+    let globalVocabulary = loadGlobalVocabularyCache();
+
+    // One-time migration from older per-profile public vocabulary caches.
+    if (!globalVocabulary.words.length && state.vocabulary.words.length) {
+      globalVocabulary = saveGlobalVocabularyCache(state.vocabulary);
+    }
+    state.vocabulary = globalVocabulary;
+    return state;
   } catch (error) {
     console.warn('Не удалось прочитать локальное состояние:', error);
-    return createDefaultState();
+    const state = createDefaultState();
+    state.vocabulary = loadGlobalVocabularyCache();
+    return state;
   }
 }
 
 export function saveLocalState(profileKey, state) {
   const key = storageKey(profileKey);
   const snapshot = repairState(safeClone(state));
+  snapshot.vocabulary = saveGlobalVocabularyCache(snapshot.vocabulary);
   snapshot.meta = {
     ...(snapshot.meta || {}),
     lastSavedAt: new Date().toISOString(),
   };
 
+  // Vocabulary is public/global and cached once for the whole browser. Personal
+  // profile storage contains only account-specific settings and learning data.
+  const personalSnapshot = safeClone(snapshot);
+  personalSnapshot.vocabulary = emptyVocabulary();
+
   try {
-    profileStorage(profileKey).setItem(key, JSON.stringify(snapshot));
+    profileStorage(profileKey).setItem(key, JSON.stringify(personalSnapshot));
     return snapshot;
   } catch (error) {
-    if (Array.isArray(snapshot.recentReviews) && snapshot.recentReviews.length > 100) {
-      snapshot.recentReviews = snapshot.recentReviews.slice(0, 100);
+    if (Array.isArray(personalSnapshot.recentReviews) && personalSnapshot.recentReviews.length > 100) {
+      personalSnapshot.recentReviews = personalSnapshot.recentReviews.slice(0, 100);
+      snapshot.recentReviews = personalSnapshot.recentReviews;
       try {
-        profileStorage(profileKey).setItem(key, JSON.stringify(snapshot));
+        profileStorage(profileKey).setItem(key, JSON.stringify(personalSnapshot));
         return snapshot;
       } catch {
         // Fall through to the original error.
@@ -159,6 +197,10 @@ export function scrubLegacyPrivateMetadata() {
       if (!raw) continue;
       const parsed = JSON.parse(raw);
       const repaired = repairState(parsed);
+      if (!loadGlobalVocabularyCache().words.length && repaired.vocabulary.words.length) {
+        saveGlobalVocabularyCache(repaired.vocabulary);
+      }
+      repaired.vocabulary = emptyVocabulary();
       repaired.meta.lastSavedAt = parsed?.meta?.lastSavedAt || repaired.meta.lastSavedAt;
       localStorage.setItem(key, JSON.stringify(repaired));
     }

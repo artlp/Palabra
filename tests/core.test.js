@@ -34,6 +34,25 @@ test('table converter detects Russian headers and creates stable words', () => {
   assert.match(words[0].id, /^w_/);
 });
 
+test('dictionary import ignores rows missing Spanish or translation', () => {
+  const words = matrixToWords([
+    ['Артикль', 'Испанский', 'Перевод', 'Часть речи'],
+    ['la', 'casa', 'дом', 'существительное'],
+    ['el', '', 'стол', 'существительное'],
+    ['', 'mesa', '', 'существительное'],
+    ['', '   ', 'слово', 'существительное'],
+    ['', 'perro', '   ', 'существительное'],
+    ['', '\u200B', 'невидимый испанский', 'существительное'],
+    ['', 'gato', '\uFEFF', 'существительное'],
+    ['', 'hola', 'привет', ''],
+  ]);
+
+  assert.deepEqual(words.map((word) => [word.spanish, word.russian]), [
+    ['casa', 'дом'],
+    ['hola', 'привет'],
+  ]);
+});
+
 test('four-column user layout imports columns B, C and D', () => {
   const first = matrixToWords([
     ['Артикль', 'Испанский', 'Перевод', 'Часть речи'],

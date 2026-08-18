@@ -1,16 +1,60 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
     function isSheetsAdmin() {
-      return request.auth != null
+      return isSignedIn()
         && request.auth.uid == 'uuDh6U8naZeC7hHv7U3Qex3sAtE2';
     }
 
-    // Общий источник словаря доступен для чтения всем посетителям сайта.
-    // Изменять его может только владелец указанного Firebase UID.
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function progressUpdateIsOneReview() {
+      return request.resource.data.wordId == resource.data.wordId
+        && request.resource.data.totalReviews == resource.data.totalReviews + 1
+        && request.resource.data.successfulReviews >= resource.data.successfulReviews
+        && request.resource.data.successfulReviews <= resource.data.successfulReviews + 1
+        && request.resource.data.typedCorrectReviews >= resource.data.typedCorrectReviews
+        && request.resource.data.typedCorrectReviews <= resource.data.typedCorrectReviews + 1
+        && request.resource.data.lapses >= resource.data.lapses
+        && request.resource.data.lapses <= resource.data.lapses + 1
+        && request.resource.data.totalResponseMs >= resource.data.totalResponseMs;
+    }
+
+    function dailyUpdateIsOneReview() {
+      return request.resource.data.date == resource.data.date
+        && request.resource.data.reviews == resource.data.reviews + 1
+        && request.resource.data.successful >= resource.data.successful
+        && request.resource.data.successful <= resource.data.successful + 1
+        && request.resource.data.typedCorrect >= resource.data.typedCorrect
+        && request.resource.data.typedCorrect <= resource.data.typedCorrect + 1
+        && request.resource.data.newWords >= resource.data.newWords
+        && request.resource.data.newWords <= resource.data.newWords + 1
+        && request.resource.data.learned >= resource.data.learned
+        && request.resource.data.learned <= resource.data.learned + 1
+        && request.resource.data.mastered >= resource.data.mastered
+        && request.resource.data.mastered <= resource.data.mastered + 1
+        && request.resource.data.totalResponseMs >= resource.data.totalResponseMs;
+    }
+
+    function profileHasNoSheetSecrets() {
+      return !request.resource.data.keys().hasAny(['vocabulary'])
+        && (
+          !request.resource.data.keys().hasAny(['settings'])
+          || !request.resource.data.settings.keys().hasAny(['sheetUrl', 'sheetName'])
+        );
+    }
+
+    // Private source configuration. Even reads are limited to Arthur L.
     match /appSettings/googleSheets {
-      allow read: if true;
+      allow read: if isSheetsAdmin();
       allow create, update: if isSheetsAdmin()
+        && request.resource.data.keys().hasOnly(['sheetUrl', 'sheetName', 'updatedAt', 'updatedBy'])
         && request.resource.data.sheetUrl is string
         && request.resource.data.sheetUrl.size() <= 4096
         && request.resource.data.sheetName is string
@@ -19,13 +63,37 @@ service cloud.firestore {
       allow delete: if isSheetsAdmin();
     }
 
-    match /users/{userId} {
-      allow read, create, update, delete: if request.auth != null
-        && request.auth.uid == userId;
+    // Public vocabulary contains only parsed word data, never the Sheet URL/name.
+    match /appData/vocabulary {
+      allow read: if true;
+      allow create, update: if isSheetsAdmin()
+        && request.resource.data.keys().hasOnly(['words', 'publishedAt'])
+        && request.resource.data.words is list
+        && request.resource.data.words.size() <= 5000;
+      allow delete: if isSheetsAdmin();
+    }
 
-      match /{document=**} {
-        allow read, write: if request.auth != null
-          && request.auth.uid == userId;
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId) && profileHasNoSheetSecrets();
+      allow delete: if isOwner(userId) && isSheetsAdmin();
+
+      match /cardProgress/{wordId} {
+        allow read, create: if isOwner(userId);
+        allow update: if isOwner(userId) && progressUpdateIsOneReview();
+        allow delete: if isOwner(userId) && isSheetsAdmin();
+      }
+
+      match /daily/{date} {
+        allow read, create: if isOwner(userId);
+        allow update: if isOwner(userId) && dailyUpdateIsOneReview();
+        allow delete: if isOwner(userId) && isSheetsAdmin();
+      }
+
+      match /reviews/{reviewId} {
+        allow read, create: if isOwner(userId);
+        allow update: if isOwner(userId) && request.resource.data == resource.data;
+        allow delete: if isOwner(userId) && isSheetsAdmin();
       }
     }
 
