@@ -2,6 +2,7 @@ const FIREBASE_VERSION = '12.17.0';
 const APP_URL = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`;
 const AUTH_URL = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`;
 const FIRESTORE_URL = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`;
+const MAX_PUBLIC_VOCABULARY_BYTES = 700_000;
 
 let sdkPromise = null;
 
@@ -63,7 +64,7 @@ export async function createFirebaseClient(firebaseConfig, onAuthChange = () => 
   provider.setCustomParameters({ prompt: 'select_account' });
 
   try {
-    await sdk.auth.setPersistence(auth, sdk.auth.browserLocalPersistence);
+    await sdk.auth.setPersistence(auth, sdk.auth.browserSessionPersistence);
   } catch (error) {
     console.warn('Firebase persistence:', error);
   }
@@ -162,39 +163,40 @@ export async function createFirebaseClient(firebaseConfig, onAuthChange = () => 
       daily,
       recentReviews,
       meta: profile.meta || {},
-      legacySheetSettings: {
-        sheetUrl: String(profile.settings?.sheetUrl || profile.vocabulary?.sourceUrl || ''),
-        sheetName: String(profile.settings?.sheetName || ''),
-      },
+      profileExists: profileSnapshot.exists(),
     };
   }
 
-  async function saveProfile(user, state) {
-    const payload = cleanUndefined({
-      displayName: user.displayName || '',
-      email: user.email || '',
-      photoURL: user.photoURL || '',
-      settings: personalSettings(state.settings),
+  function privateProfilePayload(state) {
+    return {
+      settings: {
+        ...personalSettings(state.settings),
+        sheetUrl: sdk.firestore.deleteField(),
+        sheetName: sdk.firestore.deleteField(),
+      },
+      vocabulary: sdk.firestore.deleteField(),
       meta: {
         ...(state.meta || {}),
         lastSavedAt: new Date().toISOString(),
       },
       updatedAt: new Date().toISOString(),
-    });
+    };
+  }
+
+  async function saveProfile(user, state) {
+    const payload = {
+      displayName: user.displayName || '',
+      email: user.email || '',
+      photoURL: user.photoURL || '',
+      ...privateProfilePayload(state),
+    };
     await sdk.firestore.setDoc(sdk.firestore.doc(db, 'users', user.uid), payload, { merge: true });
   }
 
   async function saveSettings(uid, state) {
     await sdk.firestore.setDoc(
       sdk.firestore.doc(db, 'users', uid),
-      cleanUndefined({
-        settings: personalSettings(state.settings),
-        meta: {
-          ...(state.meta || {}),
-          lastSavedAt: new Date().toISOString(),
-        },
-        updatedAt: new Date().toISOString(),
-      }),
+      privateProfilePayload(state),
       { merge: true },
     );
   }
@@ -238,6 +240,39 @@ export async function createFirebaseClient(firebaseConfig, onAuthChange = () => 
     return loadSheetSettings();
   }
 
+  async function loadPublishedVocabulary() {
+    const snapshot = await sdk.firestore.getDoc(
+      sdk.firestore.doc(db, 'appData', 'vocabulary'),
+    );
+    if (!snapshot.exists()) {
+      return { exists: false, words: [], publishedAt: null };
+    }
+    const data = cleanUndefined(snapshot.data());
+    return {
+      exists: true,
+      words: Array.isArray(data.words) ? data.words : [],
+      publishedAt: data.publishedAt || null,
+    };
+  }
+
+  async function publishVocabulary(user, words) {
+    if (!user?.uid) throw new Error('Для публикации словаря требуется вход.');
+    const cleanWords = cleanUndefined(Array.isArray(words) ? words : []);
+    const byteLength = new TextEncoder().encode(JSON.stringify(cleanWords)).length;
+    if (byteLength > MAX_PUBLIC_VOCABULARY_BYTES) {
+      throw new Error('Словарь слишком большой для одного документа Firestore.');
+    }
+    await sdk.firestore.setDoc(
+      sdk.firestore.doc(db, 'appData', 'vocabulary'),
+      {
+        words: cleanWords,
+        publishedAt: sdk.firestore.serverTimestamp(),
+      },
+      { merge: false },
+    );
+    return loadPublishedVocabulary();
+  }
+
   async function saveReview(uid, { progress, daily, review }) {
     const batch = sdk.firestore.writeBatch(db);
     batch.set(
@@ -266,33 +301,6 @@ export async function createFirebaseClient(firebaseConfig, onAuthChange = () => 
     }
   }
 
-  async function syncFullState(user, state) {
-    await saveProfile(user, state);
-    const operations = [];
-    Object.entries(state.progress || {}).forEach(([wordId, progress]) => {
-      operations.push((batch) => batch.set(
-        sdk.firestore.doc(db, 'users', user.uid, 'cardProgress', wordId),
-        cleanUndefined(progress),
-        { merge: true },
-      ));
-    });
-    Object.entries(state.daily || {}).forEach(([date, daily]) => {
-      operations.push((batch) => batch.set(
-        sdk.firestore.doc(db, 'users', user.uid, 'daily', date),
-        cleanUndefined(daily),
-        { merge: true },
-      ));
-    });
-    (state.recentReviews || []).slice(0, 800).forEach((review) => {
-      if (!review.id) return;
-      operations.push((batch) => batch.set(
-        sdk.firestore.doc(db, 'users', user.uid, 'reviews', review.id),
-        cleanUndefined(review),
-        { merge: true },
-      ));
-    });
-    await commitInChunks(operations);
-  }
 
   async function deleteCardProgress(uid, wordId) {
     await sdk.firestore.deleteDoc(sdk.firestore.doc(db, 'users', uid, 'cardProgress', wordId));
@@ -324,10 +332,11 @@ export async function createFirebaseClient(firebaseConfig, onAuthChange = () => 
     loadUserState,
     loadSheetSettings,
     saveSheetSettings,
+    loadPublishedVocabulary,
+    publishVocabulary,
     saveProfile,
     saveSettings,
     saveReview,
-    syncFullState,
     deleteProgress,
     deleteCardProgress,
   };

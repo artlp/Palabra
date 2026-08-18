@@ -1,7 +1,7 @@
 {
   "name": "Palabra — испанские слова",
   "short_name": "Palabra",
-  "description": "Интервальные карточки для изучения испанских слов из Google Sheets.",
+  "description": "Интервальные карточки для изучения испанских слов с личным прогрессом.",
   "lang": "ru",
   "dir": "ltr",
   "start_url": "./",

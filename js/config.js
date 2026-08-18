@@ -4,8 +4,6 @@
  */
 export const APP_CONFIG = Object.freeze({
   appName: 'Palabra',
-  defaultSheetUrl: '',
-  defaultSheetName: '',
   sheetsAdminUid: 'uuDh6U8naZeC7hHv7U3Qex3sAtE2',
   sheetsAdminName: 'Arthur L',
   firebase: {

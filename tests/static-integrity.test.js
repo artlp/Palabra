@@ -68,27 +68,50 @@ test('deployment workflow runs checks and Firestore rules isolate users', () => 
   assert.match(workflow, /actions\/configure-pages@v6/);
   assert.match(workflow, /actions\/upload-pages-artifact@v5/);
   assert.match(workflow, /actions\/deploy-pages@v5/);
+  assert.match(rules, /function isOwner\(userId\)/);
   assert.match(rules, /request\.auth\.uid == userId/);
+  assert.match(rules, /allow delete: if isOwner\(userId\) && isSheetsAdmin\(\)/);
   assert.match(rules, /allow read, write: if false/);
 });
 
-test('Google Sheets source is shared and writable only by the configured administrator', () => {
+test('Google Sheets metadata is admin-only and public users receive only parsed vocabulary', () => {
   const adminUid = 'uuDh6U8naZeC7hHv7U3Qex3sAtE2';
   const config = read('js/config.js');
   const app = read('js/app.js');
   const adapter = read('js/firebase-adapter.js');
+  const localStore = read('js/local-store.js');
   const rules = read('firestore.rules');
   const html = read('index.html');
 
   assert.match(config, new RegExp(`sheetsAdminUid:\\s*'${adminUid}'`));
   assert.match(rules, new RegExp(`request\\.auth\\.uid == '${adminUid}'`));
-  assert.match(rules, /match \/appSettings\/googleSheets/);
-  assert.match(rules, /allow read: if true/);
-  assert.match(rules, /allow create, update: if isSheetsAdmin\(\)/);
+  const privateSourceStart = rules.indexOf('match /appSettings/googleSheets');
+  const publicVocabularyStart = rules.indexOf('match /appData/vocabulary');
+  assert.ok(privateSourceStart >= 0 && publicVocabularyStart > privateSourceStart);
+  const privateSourceRules = rules.slice(privateSourceStart, publicVocabularyStart);
+  assert.match(privateSourceRules, /allow read: if isSheetsAdmin\(\)/);
+  assert.doesNotMatch(privateSourceRules, /allow read: if true/);
+  assert.match(rules, /match \/appData\/vocabulary[\s\S]*?allow read: if true/);
+  assert.match(rules, /request\.resource\.data\.keys\(\)\.hasOnly\(\['words', 'publishedAt'\]\)/);
+  assert.doesNotMatch(rules, /publishedBy/);
+  assert.match(rules, /hasAny\(\['sheetUrl', 'sheetName'\]\)/);
+  assert.match(rules, /totalReviews == resource\.data\.totalReviews \+ 1/);
+  assert.match(rules, /reviews == resource\.data\.reviews \+ 1/);
+
+  assert.match(adapter, /async function loadPublishedVocabulary/);
+  assert.match(adapter, /async function publishVocabulary/);
+  assert.match(adapter, /browserSessionPersistence/);
+  assert.doesNotMatch(adapter, /browserLocalPersistence/);
   assert.match(adapter, /doc\(db, 'appSettings', 'googleSheets'\)/);
-  assert.match(adapter, /async function saveSheetSettings/);
-  assert.match(app, /function isSheetsAdmin/);
-  assert.match(app, /runtime\.firebase\.saveSheetSettings\(runtime\.user, nextSettings\)/);
-  assert.match(html, /id="save-source-button"/);
-  assert.match(html, /id="source-permission-note"/);
+  assert.match(adapter, /doc\(db, 'appData', 'vocabulary'\)/);
+  assert.match(app, /if \(!isSheetsAdmin\(\)\) \{\s*applySharedSheetSettings/);
+  assert.match(app, /runtime\.firebase\.publishVocabulary\(runtime\.user, result\.words\)/);
+  assert.match(html, /id="source-settings-panel" hidden/);
+  assert.match(html, /id="reset-progress-panel" hidden/);
+
+  assert.doesNotMatch(app, /copyGuestIntoAccount/);
+  assert.doesNotMatch(app, /guestState\.settings/);
+  assert.match(localStore, /profileStorage\(profileKey = 'guest'\)/);
+  assert.match(localStore, /\? localStorage : sessionStorage/);
+  assert.match(localStore, /localStorage\.removeItem\(LEGACY_SHARED_SHEET_STORAGE_KEY\)/);
 });

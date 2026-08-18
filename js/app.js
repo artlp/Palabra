@@ -20,27 +20,17 @@ import { loadWordsFromFile, loadWordsFromSource } from './sheets.js';
 import {
   appendRecentReview,
   clearLocalState,
-  copyGuestIntoAccount,
   createDefaultState,
-  hasMeaningfulProgress,
-  isRemoteStateEmpty,
   loadLocalState,
   mergeStates,
   saveLocalState,
+  scrubLegacyPrivateMetadata,
   storageKey,
 } from './local-store.js';
 import { createFirebaseClient } from './firebase-adapter.js';
 
-const DEFAULTS = {
-  defaultSheetUrl: APP_CONFIG.defaultSheetUrl,
-  defaultSheetName: APP_CONFIG.defaultSheetName,
-};
-
-const SHARED_SHEET_STORAGE_KEY = 'palabra:shared-sheet:v1';
-// Бамп этой версии заставляет устройства с уже сохранённым старым словарём
-// один раз перечитать Google Sheets. Это важно для метаданных (артикль и
-// часть речи), которые в старых локальных копиях могли отсутствовать.
-const VOCABULARY_IMPORT_VERSION = 2;
+// Version 3 stops persisting Google Sheets metadata in personal browser state.
+const VOCABULARY_IMPORT_VERSION = 3;
 const SHEETS_ADMIN_UID = String(APP_CONFIG.sheetsAdminUid || '');
 const SHEETS_ADMIN_NAME = String(APP_CONFIG.sheetsAdminName || 'администратор');
 
@@ -56,41 +46,19 @@ const $ = (id) => document.getElementById(id);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 function normalizeSharedSheetSettings(candidate = {}) {
-  const hasSheetUrl = Object.prototype.hasOwnProperty.call(candidate || {}, 'sheetUrl');
-  const hasSheetName = Object.prototype.hasOwnProperty.call(candidate || {}, 'sheetName');
   return {
     exists: candidate?.exists === true,
-    sheetUrl: String(hasSheetUrl ? candidate.sheetUrl : DEFAULTS.defaultSheetUrl || '').trim(),
-    sheetName: String(hasSheetName ? candidate.sheetName : DEFAULTS.defaultSheetName || '').trim(),
+    sheetUrl: String(candidate?.sheetUrl || '').trim(),
+    sheetName: String(candidate?.sheetName || '').trim(),
     updatedAt: candidate?.updatedAt || null,
     updatedBy: String(candidate?.updatedBy || ''),
   };
 }
 
-function loadCachedSharedSheetSettings() {
-  try {
-    const raw = localStorage.getItem(SHARED_SHEET_STORAGE_KEY);
-    return normalizeSharedSheetSettings(raw ? JSON.parse(raw) : {});
-  } catch (error) {
-    console.warn('Не удалось прочитать общий источник Google Sheets:', error);
-    return normalizeSharedSheetSettings();
-  }
-}
-
-function saveCachedSharedSheetSettings(settings) {
-  try {
-    localStorage.setItem(SHARED_SHEET_STORAGE_KEY, JSON.stringify(settings));
-  } catch (error) {
-    console.warn('Не удалось сохранить общий источник Google Sheets:', error);
-  }
-}
-
-function sharedSheetKey(settings) {
-  return `${String(settings?.sheetUrl || '').trim()}\n${String(settings?.sheetName || '').trim()}`;
-}
+scrubLegacyPrivateMetadata();
 
 let profileKey = 'guest';
-let appState = loadLocalState(profileKey, DEFAULTS);
+let appState = loadLocalState(profileKey);
 
 const runtime = {
   currentView: 'dashboard',
@@ -101,14 +69,14 @@ const runtime = {
   vocabularyBusy: false,
   pendingWrites: 0,
   authMode: 'signin',
+  authSequence: 0,
   study: null,
   selectedWordId: null,
   confirmResolve: null,
   lastSourceMessage: '',
   sourceMessageType: '',
-  sheetSettings: loadCachedSharedSheetSettings(),
-  sheetSettingsLoaded: !isFirebaseConfigured(),
-  sheetSettingsReady: Promise.resolve(),
+  sheetSettings: normalizeSharedSheetSettings(),
+  sheetSettingsLoaded: false,
 };
 
 function escapeHtml(value) {
@@ -183,44 +151,30 @@ function isSheetsAdmin(user = runtime.user) {
   return Boolean(user?.uid && SHEETS_ADMIN_UID && user.uid === SHEETS_ADMIN_UID);
 }
 
-function mirrorSharedSheetSettingsIntoState() {
-  appState.settings = appState.settings || {};
-  appState.settings.sheetUrl = runtime.sheetSettings.sheetUrl;
-  appState.settings.sheetName = runtime.sheetSettings.sheetName;
-}
-
-function applySharedSheetSettings(candidate, { persist = true } = {}) {
-  const previousKey = sharedSheetKey(runtime.sheetSettings);
+function applySharedSheetSettings(candidate) {
   runtime.sheetSettings = normalizeSharedSheetSettings(candidate);
   runtime.sheetSettingsLoaded = true;
-  saveCachedSharedSheetSettings(runtime.sheetSettings);
-  mirrorSharedSheetSettingsIntoState();
-  if (persist) persistState();
-  return previousKey !== sharedSheetKey(runtime.sheetSettings);
 }
 
-function vocabularyMatchesSharedSheet(state = appState) {
-  const expectedKey = sharedSheetKey(runtime.sheetSettings);
-  if (String(state.vocabulary?.sourceKey || '').startsWith('local-csv:')) return true;
-  if (
-    state.vocabulary?.words?.length
-    && Number(state.vocabulary?.importVersion || 0) < VOCABULARY_IMPORT_VERSION
-  ) return false;
-  if (state.vocabulary?.sourceKey) return state.vocabulary.sourceKey === expectedKey;
-  return Boolean(
-    state.vocabulary?.words?.length
-    && String(state.vocabulary?.sourceUrl || '') === runtime.sheetSettings.sheetUrl
-    && !runtime.sheetSettings.sheetName,
-  );
+function isLocalCsvVocabulary(state = appState) {
+  return String(state.vocabulary?.sourceKey || '').startsWith('local-csv:');
 }
 
-function firstLegacySheetSettings(...candidates) {
-  for (const candidate of candidates) {
-    const sheetUrl = String(candidate?.sheetUrl || candidate?.sourceUrl || '').trim();
-    const sheetName = String(candidate?.sheetName || '').trim();
-    if (sheetUrl || sheetName) return { sheetUrl, sheetName };
-  }
-  return null;
+function setVocabularyState(words, {
+  sourceKey = '',
+  sourceType = 'Общий словарь',
+  syncedAt = new Date().toISOString(),
+  publishedAt = null,
+} = {}) {
+  appState.vocabulary = {
+    words: Array.isArray(words) ? words : [],
+    importVersion: VOCABULARY_IMPORT_VERSION,
+    sourceKey,
+    sourceType,
+    syncedAt,
+    publishedAt,
+  };
+  persistState();
 }
 
 function announce(message) {
@@ -244,24 +198,21 @@ function sourceMessage(message, type = '') {
 }
 
 async function refreshSharedSheetSettings({ silent = false } = {}) {
+  if (!isSheetsAdmin()) {
+    applySharedSheetSettings({ exists: false });
+    return false;
+  }
   if (!runtime.firebase?.loadSheetSettings) return false;
   try {
     const remote = await runtime.firebase.loadSheetSettings();
-    const effective = remote.exists ? remote : {
-      exists: false,
-      sheetUrl: DEFAULTS.defaultSheetUrl || '',
-      sheetName: DEFAULTS.defaultSheetName || '',
-      updatedAt: null,
-      updatedBy: '',
-    };
-    const changed = applySharedSheetSettings(effective);
+    applySharedSheetSettings(remote);
     renderSettings();
-    return changed;
+    return true;
   } catch (error) {
-    console.error('Shared Google Sheets settings:', error);
+    console.error('Private Google Sheets settings:', error);
     runtime.sheetSettingsLoaded = true;
     if (!silent) {
-      toast('Не удалось проверить общий источник Google Sheets. Используется последняя локальная копия.', 'warning', 6000);
+      toast('Не удалось загрузить приватные настройки Google Sheets.', 'warning', 6000);
     }
     return false;
   }
@@ -269,7 +220,7 @@ async function refreshSharedSheetSettings({ silent = false } = {}) {
 
 async function refreshAndSyncVocabulary({ silent = false } = {}) {
   if (runtime.vocabularyBusy) return;
-  await refreshSharedSheetSettings({ silent: true });
+  if (isSheetsAdmin()) await refreshSharedSheetSettings({ silent: true });
   await syncVocabulary({ silent });
 }
 
@@ -348,12 +299,15 @@ function updateSyncVisual() {
 
 function queueRemoteOperation(promise, successMessage = '') {
   if (!promise) return;
+  const operationProfileKey = profileKey;
   runtime.pendingWrites += 1;
   updateSyncVisual();
   Promise.resolve(promise)
     .then(() => {
-      appState.meta.lastRemoteSyncAt = new Date().toISOString();
-      persistState();
+      if (profileKey === operationProfileKey) {
+        appState.meta.lastRemoteSyncAt = new Date().toISOString();
+        persistState();
+      }
       if (successMessage) toast(successMessage, 'success');
     })
     .catch((error) => {
@@ -481,7 +435,7 @@ function renderDashboard() {
   setText('dashboard-kicker', analytics.reviewsToday ? `${analytics.reviewsToday} ответов сегодня` : 'На сегодня');
   if (!analytics.totalWords) {
     setText('dashboard-greeting', 'Подключите свой словарь');
-    setText('dashboard-subtitle', 'Можно вставить ссылку Google Sheets или начать со встроенного демо-набора.');
+    setText('dashboard-subtitle', 'Обновите общий словарь или начните со встроенного демо-набора.');
   } else if (queue.length) {
     setText('dashboard-greeting', `${queue.length} ${pluralize(queue.length, ['карточка', 'карточки', 'карточек'])} в плане`);
     setText('dashboard-subtitle', `${analytics.dueNow} к повторению и ${dailyNew} новых. Направление перевода выбирается случайно с приоритетом слабой стороны.`);
@@ -511,7 +465,7 @@ function renderDashboard() {
   } else {
     const nextDue = nextFutureDue();
     setText('next-focus-title', nextDue ? `Следующее повторение ${formatRelativeDue(nextDue)}` : 'Карточек пока нет');
-    setText('next-focus-copy', analytics.totalWords ? 'Можно посмотреть аналитику или обновить таблицу.' : 'Подключите Google Sheets или загрузите CSV.');
+    setText('next-focus-copy', analytics.totalWords ? 'Можно посмотреть аналитику или обновить словарь.' : 'Обновите общий словарь или загрузите CSV.');
   }
 
   const hardest = analytics.hardest.slice(0, 3);
@@ -632,8 +586,14 @@ function renderSourceStatus() {
 }
 
 function renderSettings() {
-  setFormValue('sheet-url-input', runtime.sheetSettings.sheetUrl || '');
-  setFormValue('sheet-name-input', runtime.sheetSettings.sheetName || '');
+  const canSeePrivateSource = isSheetsAdmin();
+  const sourcePanel = $('source-settings-panel');
+  const resetPanel = $('reset-progress-panel');
+  if (sourcePanel) sourcePanel.hidden = !canSeePrivateSource;
+  if (resetPanel) resetPanel.hidden = !canSeePrivateSource;
+
+  setFormValue('sheet-url-input', canSeePrivateSource ? runtime.sheetSettings.sheetUrl || '' : '');
+  setFormValue('sheet-name-input', canSeePrivateSource ? runtime.sheetSettings.sheetName || '' : '');
   setFormValue('daily-new-limit', appState.settings.dailyNewLimit ?? DEFAULT_LEARNING_SETTINGS.dailyNewLimit);
   setFormValue('daily-review-limit', appState.settings.dailyReviewLimit ?? DEFAULT_LEARNING_SETTINGS.dailyReviewLimit);
   setFormValue('answer-tolerance', appState.settings.answerTolerance || 'balanced');
@@ -644,41 +604,29 @@ function renderSettings() {
   setFormValue('theme-select', appState.settings.theme || 'system');
   renderSourceStatus();
 
-  const canEditSource = isSheetsAdmin();
-  const sourceUrlInput = $('sheet-url-input');
-  const sourceNameInput = $('sheet-name-input');
   const sourceSaveButton = $('save-source-button');
-  [sourceUrlInput, sourceNameInput].forEach((input) => {
-    if (!input) return;
-    input.readOnly = !canEditSource;
-    input.setAttribute('aria-readonly', String(!canEditSource));
-  });
   if (sourceSaveButton && !sourceSaveButton.dataset.originalLabel) {
-    sourceSaveButton.disabled = !canEditSource || !runtime.firebase;
+    sourceSaveButton.disabled = !canSeePrivateSource || !runtime.firebase;
   }
-  $('source-settings-form')?.classList.toggle('is-readonly', !canEditSource);
 
-  let permissionNote;
-  if (!runtime.sheetSettingsLoaded) {
-    permissionNote = 'Загружаем общий источник из Firestore…';
-  } else if (canEditSource) {
-    permissionNote = `Вы вошли как ${SHEETS_ADMIN_NAME}. Сохранённый источник применяется ко всем пользователям.`;
-  } else if (runtime.user) {
-    permissionNote = `Общий источник доступен только для чтения. Изменять его может только ${SHEETS_ADMIN_NAME}.`;
+  if (canSeePrivateSource) {
+    let permissionNote = runtime.sheetSettingsLoaded
+      ? `Приватная настройка источника видна только ${SHEETS_ADMIN_NAME}. После обновления пользователям публикуются только слова, без ссылки и названия вкладки.`
+      : 'Загружаем приватные настройки источника…';
+    if (runtime.sheetSettingsLoaded && !runtime.sheetSettings.exists) {
+      permissionNote += ' Документ настроек ещё не создан; пустой URL публикует демо-словарь.';
+    }
+    setText('source-permission-note', permissionNote);
   } else {
-    permissionNote = `Источник общий для всех пользователей. Для изменения нужно войти как ${SHEETS_ADMIN_NAME}.`;
+    setText('source-permission-note', '');
   }
-  if (runtime.sheetSettingsLoaded && !runtime.sheetSettings.exists) {
-    permissionNote += ' Документ настроек ещё не создан; сейчас используется источник по умолчанию.';
-  }
-  setText('source-permission-note', permissionNote);
 
   const container = $('account-settings');
   if (runtime.user) {
-    container.innerHTML = `<div class="account-settings-row">${avatarMarkup(runtime.user)}<div><strong>${escapeHtml(runtime.user.displayName || runtime.user.email || 'Аккаунт')}</strong><span>${escapeHtml(runtime.user.email || '')}</span></div></div><p>Карточки, дневная статистика и настройки синхронизируются с Firestore. Локальная копия остаётся для быстрого запуска.</p>`;
+    container.innerHTML = `<div class="account-settings-row">${avatarMarkup(runtime.user)}<div><strong>${escapeHtml(runtime.user.displayName || runtime.user.email || 'Аккаунт')}</strong><span>${escapeHtml(runtime.user.email || '')}</span></div></div><p>Карточки, дневная статистика и настройки принадлежат только этому аккаунту и синхронизируются с его веткой Firestore. Локальный кэш аккаунта хранится только в текущей вкладке.</p>`;
     setText('settings-auth-button', 'Выйти');
   } else if (isFirebaseConfigured()) {
-    container.innerHTML = '<div class="account-settings-row"><span class="avatar">Г</span><div><strong>Гостевой профиль</strong><span>Только этот браузер</span></div></div><p>После входа локальный прогресс переносится в новый пустой профиль автоматически.</p>';
+    container.innerHTML = '<div class="account-settings-row"><span class="avatar">Г</span><div><strong>Гостевой профиль</strong><span>Только этот браузер</span></div></div><p>Гостевые настройки и прогресс остаются отдельными и не переносятся в аккаунт автоматически.</p>';
     setText('settings-auth-button', 'Войти');
   } else {
     container.innerHTML = '<div class="account-settings-row"><span class="avatar">!</span><div><strong>Firebase не настроен</strong><span>Вход временно недоступен</span></div></div><p>Заполните объект <code>firebase</code> в <code>js/config.js</code> и добавьте домен GitHub Pages в Authorized domains.</p>';
@@ -707,24 +655,57 @@ async function syncVocabulary({ silent = false } = {}) {
   sourceMessage('Загружаем словарь…');
 
   try {
-    const source = runtime.sheetSettings;
-    const result = await loadWordsFromSource(source.sheetUrl, {
-      sheetName: source.sheetName,
-      fallbackUrl: './data/demo-words.csv',
-    });
-    appState.vocabulary = {
-      words: result.words,
-      importVersion: VOCABULARY_IMPORT_VERSION,
-      sourceUrl: source.sheetUrl || '',
-      sourceSheetName: source.sheetName || '',
-      sourceKey: sharedSheetKey(source),
-      sourceType: source.sheetUrl ? result.sourceType : 'Демо-словарь',
-      syncedAt: result.syncedAt,
-    };
-    persistState();
-    sourceMessage(`${result.words.length} слов загружено из ${appState.vocabulary.sourceType}.`, 'success');
+    if (runtime.firebase && isSheetsAdmin()) {
+      const source = runtime.sheetSettings;
+      const result = await loadWordsFromSource(source.sheetUrl, {
+        sheetName: source.sheetName,
+        fallbackUrl: './data/demo-words.csv',
+      });
+      const published = await runtime.firebase.publishVocabulary(runtime.user, result.words);
+      setVocabularyState(result.words, {
+        sourceKey: `public:${published.publishedAt || result.syncedAt}`,
+        sourceType: source.sheetUrl ? 'Общий словарь' : 'Демо-словарь',
+        syncedAt: result.syncedAt,
+        publishedAt: published.publishedAt || result.syncedAt,
+      });
+      sourceMessage(`${result.words.length} слов обновлено и опубликовано без данных Google Sheets.`, 'success');
+    } else if (runtime.firebase?.loadPublishedVocabulary) {
+      let published;
+      try {
+        published = await runtime.firebase.loadPublishedVocabulary();
+      } catch (error) {
+        console.warn('Public vocabulary:', error);
+        published = { exists: false, words: [] };
+      }
+      if (published.exists && published.words.length) {
+        setVocabularyState(published.words, {
+          sourceKey: `public:${published.publishedAt || 'current'}`,
+          sourceType: 'Общий словарь',
+          syncedAt: new Date().toISOString(),
+          publishedAt: published.publishedAt,
+        });
+        sourceMessage(`${published.words.length} слов загружено из общего словаря.`, 'success');
+      } else {
+        const demo = await loadWordsFromSource('', { fallbackUrl: './data/demo-words.csv' });
+        setVocabularyState(demo.words, {
+          sourceKey: 'public:demo',
+          sourceType: 'Демо-словарь',
+          syncedAt: demo.syncedAt,
+        });
+        sourceMessage(`${demo.words.length} слов загружено из демо-словаря.`, 'success');
+      }
+    } else {
+      const demo = await loadWordsFromSource('', { fallbackUrl: './data/demo-words.csv' });
+      setVocabularyState(demo.words, {
+        sourceKey: 'public:demo',
+        sourceType: 'Демо-словарь',
+        syncedAt: demo.syncedAt,
+      });
+      sourceMessage(`${demo.words.length} слов загружено из демо-словаря.`, 'success');
+    }
+
     renderGlobal();
-    if (!silent) toast(`Словарь обновлён: ${result.words.length} слов.`, 'success');
+    if (!silent) toast(`Словарь обновлён: ${appState.vocabulary.words.length} слов.`, 'success');
   } catch (error) {
     console.error(error);
     sourceMessage(error.message || 'Не удалось загрузить словарь.', 'error');
@@ -739,19 +720,14 @@ async function importCsv(file) {
   try {
     sourceMessage('Читаем CSV…');
     const result = await loadWordsFromFile(file);
-    appState.vocabulary = {
-      words: result.words,
-      importVersion: VOCABULARY_IMPORT_VERSION,
-      sourceUrl: '',
-      sourceSheetName: '',
+    setVocabularyState(result.words, {
       sourceKey: `local-csv:${file?.name || 'file'}`,
       sourceType: result.sourceType,
       syncedAt: result.syncedAt,
-    };
-    persistState();
+    });
     sourceMessage(`${result.words.length} слов загружено из локального CSV.`, 'success');
     renderGlobal();
-    toast('CSV импортирован. Для синхронизации между устройствами лучше использовать Google Sheets.', 'success', 6000);
+    toast('CSV импортирован только в текущий профиль браузера.', 'success', 6000);
   } catch (error) {
     sourceMessage(error.message || 'Ошибка CSV.', 'error');
     toast(error.message || 'Ошибка CSV.', 'error');
@@ -1104,6 +1080,7 @@ function openWordDialog(wordId) {
   const example = word.example || word.notes;
   $('word-modal-example').hidden = !example;
   setText('word-modal-example', example || '');
+  $('reset-word-button').hidden = !isSheetsAdmin();
   $('word-modal-stats').innerHTML = [
     ['Статус', status.label],
     ['Повторений', reviews],
@@ -1130,9 +1107,13 @@ function settleConfirm(value) {
 }
 
 async function resetAllProgress() {
+  if (!isSheetsAdmin()) {
+    toast(`Сброс прогресса доступен только ${SHEETS_ADMIN_NAME}.`, 'error', 6000);
+    return;
+  }
   const confirmed = await confirmAction({
     title: 'Сбросить весь прогресс?',
-    copy: 'Будут удалены интервалы, история ответов и аналитика. Словарь и настройки источника останутся.',
+    copy: 'Будут удалены интервалы, история ответов и аналитика только текущего аккаунта. Словарь и личные настройки останутся.',
     confirmLabel: 'Удалить прогресс',
   });
   if (!confirmed) return;
@@ -1151,6 +1132,10 @@ async function resetAllProgress() {
 }
 
 async function resetSelectedWord() {
+  if (!isSheetsAdmin()) {
+    toast(`Сброс карточек доступен только ${SHEETS_ADMIN_NAME}.`, 'error', 6000);
+    return;
+  }
   const wordId = runtime.selectedWordId;
   const word = appState.vocabulary.words.find((candidate) => candidate.id === wordId);
   if (!word) return;
@@ -1260,7 +1245,9 @@ async function resetPassword() {
 
 async function signOutUser() {
   if (!runtime.firebase) return;
+  const accountKey = runtime.user?.uid || '';
   await runtime.firebase.signOut();
+  if (accountKey) clearLocalState(accountKey);
 }
 
 async function accountButtonAction() {
@@ -1282,92 +1269,85 @@ async function settingsAuthAction() {
 }
 
 async function handleAuthChange(user) {
+  const sequence = ++runtime.authSequence;
   runtime.user = user || null;
   runtime.firebaseStatus = 'ready';
   runtime.firebaseError = '';
+  runtime.sheetSettings = normalizeSharedSheetSettings();
+  runtime.sheetSettingsLoaded = !isSheetsAdmin(user);
 
   if (!user) {
     profileKey = 'guest';
-    appState = loadLocalState(profileKey, DEFAULTS);
-    mirrorSharedSheetSettingsIntoState();
+    appState = loadLocalState(profileKey);
     persistState();
+    applyTheme();
     if ($('auth-dialog').open) $('auth-dialog').close();
-    if (!appState.vocabulary.words.length || !vocabularyMatchesSharedSheet()) {
-      await syncVocabulary({ silent: true });
-    }
+    if (!isLocalCsvVocabulary()) await syncVocabulary({ silent: true });
+    if (sequence !== runtime.authSequence) return;
     renderGlobal();
     return;
   }
 
   if ($('auth-dialog').open) $('auth-dialog').close();
   profileKey = user.uid;
-  const guestState = loadLocalState('guest', DEFAULTS);
-  const localAccount = loadLocalState(profileKey, DEFAULTS);
+  const localAccount = loadLocalState(profileKey);
   runtime.pendingWrites += 1;
   updateSyncVisual();
 
   try {
-    const remoteState = await runtime.firebase.loadUserState(user.uid);
-    let migratedSource = false;
+    if (isSheetsAdmin(user)) {
+      await refreshSharedSheetSettings({ silent: true });
+      if (sequence !== runtime.authSequence) return;
+    }
 
-    if (isSheetsAdmin(user) && !runtime.sheetSettings.exists) {
-      const legacySource = firstLegacySheetSettings(
-        remoteState.legacySheetSettings,
-        localAccount.settings,
-        guestState.settings,
-      );
-      if (legacySource) {
-        try {
-          const savedSource = await runtime.firebase.saveSheetSettings(user, legacySource);
-          applySharedSheetSettings(savedSource, { persist: false });
-          migratedSource = true;
-        } catch (migrationError) {
-          console.warn('Legacy Google Sheets migration:', migrationError);
-          applySharedSheetSettings({ ...legacySource, exists: false }, { persist: false });
-          toast('Старый источник найден, но Firestore пока не разрешил перенести его в общие настройки. Опубликуйте обновлённые правила.', 'warning', 8000);
-        }
+    const remoteState = await runtime.firebase.loadUserState(user.uid);
+    if (sequence !== runtime.authSequence) return;
+
+    // A successful Firestore read is authoritative for personal settings/progress.
+    // Browser cache is used only for the vocabulary and as an offline fallback.
+    const remoteOnly = mergeStates(createDefaultState(), remoteState);
+    if (localAccount.vocabulary?.words?.length) {
+      const key = String(localAccount.vocabulary.sourceKey || '');
+      if (key.startsWith('local-csv:') || key.startsWith('public:')) {
+        remoteOnly.vocabulary = localAccount.vocabulary;
       }
     }
-
-    let merged = mergeStates(localAccount, remoteState, DEFAULTS);
-    let migrated = false;
-
-    if (isRemoteStateEmpty(remoteState) && !hasMeaningfulProgress(localAccount) && hasMeaningfulProgress(guestState)) {
-      merged = copyGuestIntoAccount(guestState, merged, DEFAULTS);
-      migrated = true;
-    }
-    if (!merged.vocabulary.words.length && guestState.vocabulary.words.length && vocabularyMatchesSharedSheet(guestState)) {
-      merged.vocabulary = guestState.vocabulary;
-    }
-
-    appState = merged;
-    mirrorSharedSheetSettingsIntoState();
+    appState = remoteOnly;
     persistState();
-    if (!appState.vocabulary.words.length || !vocabularyMatchesSharedSheet()) {
-      await syncVocabulary({ silent: true });
-    }
-    await runtime.firebase.syncFullState(user, appState);
+    applyTheme();
+
+    // Creates the profile when needed and removes legacy sheet metadata from it.
+    await runtime.firebase.saveProfile(user, appState);
+    if (sequence !== runtime.authSequence) return;
+
+    if (!isLocalCsvVocabulary()) await syncVocabulary({ silent: true });
+    if (sequence !== runtime.authSequence) return;
     appState.meta.lastRemoteSyncAt = new Date().toISOString();
     persistState();
-    if (migrated) toast('Локальный прогресс перенесён в аккаунт.', 'success', 6000);
-    if (migratedSource) toast('Источник Google Sheets перенесён в общие настройки.', 'success', 6000);
   } catch (error) {
+    if (sequence !== runtime.authSequence) return;
     console.error(error);
     runtime.firebaseError = error.message || 'Ошибка загрузки профиля';
     runtime.firebaseStatus = 'error';
     appState = localAccount;
-    mirrorSharedSheetSettingsIntoState();
-    if (!appState.vocabulary.words.length && guestState.vocabulary.words.length && vocabularyMatchesSharedSheet(guestState)) {
-      appState.vocabulary = guestState.vocabulary;
-    }
     persistState();
-    if (!appState.vocabulary.words.length || !vocabularyMatchesSharedSheet()) {
-      await syncVocabulary({ silent: true });
+    applyTheme();
+    if (!appState.vocabulary.words.length) {
+      try {
+        const demo = await loadWordsFromSource('', { fallbackUrl: './data/demo-words.csv' });
+        setVocabularyState(demo.words, {
+          sourceKey: 'public:demo',
+          sourceType: 'Демо-словарь',
+          syncedAt: demo.syncedAt,
+        });
+      } catch (demoError) {
+        console.error('Demo vocabulary:', demoError);
+      }
     }
-    toast('Не удалось получить облачный прогресс. Используется локальная копия.', 'error', 6000);
+    toast('Не удалось получить облачные данные. Используется кэш этого аккаунта в текущей вкладке.', 'error', 6000);
   } finally {
     runtime.pendingWrites = Math.max(0, runtime.pendingWrites - 1);
-    renderGlobal();
+    if (sequence === runtime.authSequence) renderGlobal();
   }
 }
 
@@ -1375,36 +1355,30 @@ async function initializeFirebase() {
   if (!isFirebaseConfigured()) {
     runtime.firebaseStatus = 'disabled';
     runtime.sheetSettingsLoaded = true;
-    mirrorSharedSheetSettingsIntoState();
-    persistState();
+    if (!isLocalCsvVocabulary() && !appState.vocabulary.words.length) {
+      await syncVocabulary({ silent: true });
+    }
     renderAccount();
     return;
   }
 
   runtime.firebaseStatus = 'connecting';
   updateSyncVisual();
-  let resolveSheetSettingsReady = () => {};
-  runtime.sheetSettingsReady = new Promise((resolve) => { resolveSheetSettingsReady = resolve; });
   try {
     runtime.firebase = await createFirebaseClient(APP_CONFIG.firebase, (user) => (
-      runtime.sheetSettingsReady
-        .then(() => handleAuthChange(user))
-        .catch((error) => console.error('Auth state:', error))
+      handleAuthChange(user).catch((error) => console.error('Auth state:', error))
     ));
-    await refreshSharedSheetSettings({ silent: true });
+    if (runtime.firebase?.authReady) await runtime.firebase.authReady;
   } catch (error) {
     console.error(error);
     runtime.firebaseStatus = 'error';
     runtime.firebaseError = error.message || 'Не удалось инициализировать Firebase';
+    runtime.sheetSettingsLoaded = true;
+    if (!isLocalCsvVocabulary() && !appState.vocabulary.words.length) {
+      await syncVocabulary({ silent: true });
+    }
     renderAccount();
     toast('Firebase не подключился. Локальный режим продолжает работать.', 'error', 6000);
-  } finally {
-    runtime.sheetSettingsLoaded = true;
-    resolveSheetSettingsReady();
-  }
-
-  if (runtime.firebase?.authReady) {
-    await runtime.firebase.authReady;
   }
 }
 
@@ -1435,7 +1409,7 @@ async function handleSourceSettings(event) {
     const saved = await runtime.firebase.saveSheetSettings(runtime.user, nextSettings);
     applySharedSheetSettings(saved);
     await syncVocabulary({ silent: true });
-    toast('Общий источник Google Sheets сохранён для всех пользователей.', 'success', 6000);
+    toast('Приватный источник сохранён; пользователям опубликованы только слова.', 'success', 6000);
   } catch (error) {
     console.error(error);
     const permissionDenied = String(error?.code || '').includes('permission-denied');
@@ -1479,6 +1453,7 @@ function bindEvents() {
   $('sync-button-top').addEventListener('click', () => refreshAndSyncVocabulary());
   $('dashboard-sync-button').addEventListener('click', () => refreshAndSyncVocabulary());
   $('words-sync-button').addEventListener('click', () => refreshAndSyncVocabulary());
+  $('settings-sync-button').addEventListener('click', () => refreshAndSyncVocabulary());
   $('top-start-button').addEventListener('click', startStudy);
   $('start-study-button').addEventListener('click', startStudy);
   $('study-empty-start').addEventListener('click', startStudy);
@@ -1537,8 +1512,9 @@ function bindEvents() {
   });
 
   window.addEventListener('storage', (event) => {
-    if (event.key !== storageKey(profileKey)) return;
-    appState = loadLocalState(profileKey, DEFAULTS);
+    if (profileKey !== 'guest' || event.key !== storageKey('guest')) return;
+    appState = loadLocalState('guest');
+    applyTheme();
     renderGlobal();
   });
 
@@ -1566,9 +1542,6 @@ async function init() {
   navigate('dashboard');
 
   await initializeFirebase();
-  if (!appState.vocabulary.words.length || !vocabularyMatchesSharedSheet()) {
-    await syncVocabulary({ silent: true });
-  }
   registerServiceWorker();
 }
 

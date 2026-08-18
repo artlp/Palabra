@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#5b5ce2">
-  <meta name="description" content="Интервальные карточки для изучения испанских слов из Google Sheets.">
+  <meta name="referrer" content="no-referrer">
+  <meta name="description" content="Интервальные карточки для изучения испанских слов с личным прогрессом.">
   <title>Palabra — испанские слова</title>
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
@@ -100,7 +101,7 @@
             <p id="dashboard-subtitle">Загрузите словарь, и здесь появится план занятий.</p>
             <div class="hero-actions">
               <button class="button button-primary" id="start-study-button" type="button">Начать занятие</button>
-              <button class="button button-ghost" id="dashboard-sync-button" type="button">Обновить таблицу</button>
+              <button class="button button-ghost" id="dashboard-sync-button" type="button">Обновить словарь</button>
             </div>
           </div>
           <div class="hero-progress" aria-label="Общий прогресс">
@@ -150,7 +151,7 @@
             </div>
             <div class="next-focus" id="next-focus">
               <span class="next-focus-number" id="next-focus-number">0</span>
-              <div><strong id="next-focus-title">Карточек пока нет</strong><p id="next-focus-copy">Подключите Google Sheets или загрузите CSV.</p></div>
+              <div><strong id="next-focus-title">Карточек пока нет</strong><p id="next-focus-copy">Обновите общий словарь или загрузите CSV.</p></div>
             </div>
             <div class="mini-divider"></div>
             <div class="mini-list" id="dashboard-hardest-list"></div>
@@ -318,8 +319,8 @@
 
       <section class="view-panel" id="settings-view" data-view-panel="settings" hidden>
         <div class="settings-grid">
-          <article class="panel settings-panel">
-            <div class="panel-heading"><div><span class="panel-kicker">Источник слов</span><h3>Google Sheets</h3></div></div>
+          <article class="panel settings-panel" id="source-settings-panel" hidden>
+            <div class="panel-heading"><div><span class="panel-kicker">Приватный источник</span><h3>Google Sheets</h3></div></div>
             <p class="settings-intro">Это общий источник словаря для всех пользователей. Формат таблицы: A — <code>Артикль</code>, B — <code>Испанский</code>, C — <code>Перевод</code>, D — <code>Часть речи</code>. Для карточек используются B — испанское слово, C — перевод и D — часть речи. Артикль из колонки A показывается вместе с правильным испанским ответом для существительных.</p>
             <form id="source-settings-form" class="settings-form">
               <p class="permission-note" id="source-permission-note"></p>
@@ -333,12 +334,19 @@
                 <input id="sheet-name-input" type="text" placeholder="Слова">
               </label>
               <div class="form-actions">
-                <button class="button button-primary" id="save-source-button" type="submit">Сохранить общий источник</button>
-                <label class="button button-ghost file-button">Импортировать CSV<input id="csv-file-input" type="file" accept=".csv,text/csv,text/plain"></label>
+                <button class="button button-primary" id="save-source-button" type="submit">Сохранить источник и опубликовать слова</button>
               </div>
-              <small class="local-import-note">Импорт CSV остаётся локальным и не изменяет общий источник.</small>
-              <div class="source-status" id="source-status"></div>
             </form>
+          </article>
+
+          <article class="panel settings-panel" id="local-import-panel">
+            <div class="panel-heading"><div><span class="panel-kicker">Словарь</span><h3>Обновление и локальный CSV</h3></div></div>
+            <p class="settings-intro">Общий словарь загружается без раскрытия настроек его источника. CSV-файл заменяет словарь только в текущем профиле браузера.</p>
+            <div class="form-actions">
+              <button class="button button-ghost" id="settings-sync-button" type="button">Обновить общий словарь</button>
+              <label class="button button-ghost file-button">Импортировать CSV<input id="csv-file-input" type="file" accept=".csv,text/csv,text/plain"></label>
+            </div>
+            <div class="source-status" id="source-status"></div>
           </article>
 
           <article class="panel settings-panel">
@@ -381,9 +389,9 @@
             </div>
           </article>
 
-          <article class="panel settings-panel danger-panel">
+          <article class="panel settings-panel danger-panel" id="reset-progress-panel" hidden>
             <div class="panel-heading"><div><span class="panel-kicker">Сброс</span><h3>Удалить учебный прогресс</h3></div></div>
-            <p class="settings-intro">Словарь и ссылка на Google Sheets сохранятся. История ответов, интервалы и аналитика будут удалены.</p>
+            <p class="settings-intro">Удаляются только история ответов, интервалы и аналитика текущего аккаунта. Другие аккаунты не затрагиваются.</p>
             <button class="button button-danger" id="reset-progress-button" type="button">Сбросить прогресс</button>
           </article>
         </div>
@@ -430,7 +438,7 @@
       <p class="word-modal-translation" id="word-modal-russian">слово</p>
       <p class="word-modal-example" id="word-modal-example" hidden></p>
       <div class="word-modal-stats" id="word-modal-stats"></div>
-      <div class="form-actions"><button class="button button-danger subtle" id="reset-word-button" type="button">Сбросить только это слово</button></div>
+      <div class="form-actions"><button class="button button-danger subtle" id="reset-word-button" type="button" hidden>Сбросить только это слово</button></div>
     </div>
   </dialog>
 

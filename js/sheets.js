@@ -131,7 +131,6 @@ export async function loadWordsFromSource(sourceUrl, { sheetName = '', fallbackU
   return {
     words,
     sourceType,
-    sourceUrl: effectiveUrl,
     syncedAt: new Date().toISOString(),
   };
 }
@@ -144,7 +143,6 @@ export async function loadWordsFromFile(file) {
   return {
     words,
     sourceType: 'Локальный CSV',
-    sourceUrl: '',
     syncedAt: new Date().toISOString(),
   };
 }

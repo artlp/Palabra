@@ -6,10 +6,40 @@ import {
 
 const STORAGE_PREFIX = 'palabra:v2:';
 const MAX_RECENT_REVIEWS = 800;
+const LEGACY_SHARED_SHEET_STORAGE_KEY = 'palabra:shared-sheet:v1';
 
 function safeClone(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
+}
+
+function personalSettings(settings = {}) {
+  const {
+    sheetUrl: _legacySheetUrl,
+    sheetName: _legacySheetName,
+    ...personal
+  } = settings || {};
+  return personal;
+}
+
+function safeVocabulary(vocabulary = {}) {
+  const sourceKey = String(vocabulary?.sourceKey || '');
+  const safeSourceKey = sourceKey.startsWith('local-csv:') || sourceKey.startsWith('public:')
+    ? sourceKey
+    : '';
+  const sourceType = safeSourceKey.startsWith('local-csv:')
+    ? 'Локальный CSV'
+    : safeSourceKey.startsWith('public:')
+      ? (String(vocabulary?.sourceType || '') === 'Демо-словарь' ? 'Демо-словарь' : 'Общий словарь')
+      : '';
+  return {
+    words: Array.isArray(vocabulary?.words) ? vocabulary.words : [],
+    importVersion: Number(vocabulary?.importVersion || 0),
+    sourceKey: safeSourceKey,
+    sourceType,
+    syncedAt: vocabulary?.syncedAt || null,
+    publishedAt: vocabulary?.publishedAt || null,
+  };
 }
 
 export function storageKey(profileKey = 'guest') {
@@ -17,20 +47,24 @@ export function storageKey(profileKey = 'guest') {
   return `${STORAGE_PREFIX}${safeKey}`;
 }
 
-export function createDefaultState({ defaultSheetUrl = '', defaultSheetName = '' } = {}) {
+function profileStorage(profileKey = 'guest') {
+  return String(profileKey || 'guest') === 'guest' ? localStorage : sessionStorage;
+}
+
+export function createDefaultState() {
   return {
     version: 2,
     settings: {
       ...DEFAULT_LEARNING_SETTINGS,
-      sheetUrl: defaultSheetUrl,
-      sheetName: defaultSheetName,
       theme: 'system',
     },
     vocabulary: {
       words: [],
-      sourceUrl: defaultSheetUrl,
+      importVersion: 0,
+      sourceKey: '',
       sourceType: '',
       syncedAt: null,
+      publishedAt: null,
     },
     progress: {},
     daily: {},
@@ -42,21 +76,19 @@ export function createDefaultState({ defaultSheetUrl = '', defaultSheetName = ''
   };
 }
 
-function repairState(candidate, defaults) {
-  const base = createDefaultState(defaults);
+function repairState(candidate) {
+  const base = createDefaultState();
   if (!candidate || typeof candidate !== 'object') return base;
   return {
     ...base,
-    ...candidate,
     version: 2,
     settings: {
       ...base.settings,
-      ...(candidate.settings || {}),
+      ...personalSettings(candidate.settings || {}),
     },
     vocabulary: {
       ...base.vocabulary,
-      ...(candidate.vocabulary || {}),
-      words: Array.isArray(candidate.vocabulary?.words) ? candidate.vocabulary.words : [],
+      ...safeVocabulary(candidate.vocabulary || {}),
     },
     progress: candidate.progress && typeof candidate.progress === 'object' ? candidate.progress : {},
     daily: candidate.daily && typeof candidate.daily === 'object' ? candidate.daily : {},
@@ -68,33 +100,33 @@ function repairState(candidate, defaults) {
   };
 }
 
-export function loadLocalState(profileKey, defaults = {}) {
+export function loadLocalState(profileKey) {
   const key = storageKey(profileKey);
   try {
-    const raw = localStorage.getItem(key);
-    return repairState(raw ? JSON.parse(raw) : null, defaults);
+    const raw = profileStorage(profileKey).getItem(key);
+    return repairState(raw ? JSON.parse(raw) : null);
   } catch (error) {
     console.warn('Не удалось прочитать локальное состояние:', error);
-    return createDefaultState(defaults);
+    return createDefaultState();
   }
 }
 
 export function saveLocalState(profileKey, state) {
   const key = storageKey(profileKey);
-  const snapshot = safeClone(state);
+  const snapshot = repairState(safeClone(state));
   snapshot.meta = {
     ...(snapshot.meta || {}),
     lastSavedAt: new Date().toISOString(),
   };
 
   try {
-    localStorage.setItem(key, JSON.stringify(snapshot));
+    profileStorage(profileKey).setItem(key, JSON.stringify(snapshot));
     return snapshot;
   } catch (error) {
     if (Array.isArray(snapshot.recentReviews) && snapshot.recentReviews.length > 100) {
       snapshot.recentReviews = snapshot.recentReviews.slice(0, 100);
       try {
-        localStorage.setItem(key, JSON.stringify(snapshot));
+        profileStorage(profileKey).setItem(key, JSON.stringify(snapshot));
         return snapshot;
       } catch {
         // Fall through to the original error.
@@ -105,7 +137,34 @@ export function saveLocalState(profileKey, state) {
 }
 
 export function clearLocalState(profileKey) {
-  localStorage.removeItem(storageKey(profileKey));
+  const key = storageKey(profileKey);
+  localStorage.removeItem(key);
+  sessionStorage.removeItem(key);
+}
+
+export function scrubLegacyPrivateMetadata() {
+  try {
+    localStorage.removeItem(LEGACY_SHARED_SHEET_STORAGE_KEY);
+    const guestKey = storageKey('guest');
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(STORAGE_PREFIX)) continue;
+      if (key !== guestKey) {
+        // Old versions persisted authenticated users in localStorage. Remove those
+        // caches so a later guest session on a shared browser cannot inspect them.
+        localStorage.removeItem(key);
+        continue;
+      }
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      const repaired = repairState(parsed);
+      repaired.meta.lastSavedAt = parsed?.meta?.lastSavedAt || repaired.meta.lastSavedAt;
+      localStorage.setItem(key, JSON.stringify(repaired));
+    }
+  } catch (error) {
+    console.warn('Не удалось очистить устаревшие локальные данные:', error);
+  }
 }
 
 export function appendRecentReview(state, review) {
@@ -115,17 +174,9 @@ export function appendRecentReview(state, review) {
   };
 }
 
-export function hasMeaningfulProgress(state) {
-  return Object.values(state?.progress || {}).some((progress) => Number(progress.totalReviews) > 0);
-}
-
-export function isRemoteStateEmpty(remoteState) {
-  return !remoteState || Object.keys(remoteState.progress || {}).length === 0;
-}
-
-export function mergeStates(localState, remoteState, defaults = {}) {
-  const local = repairState(localState, defaults);
-  const remote = repairState(remoteState, defaults);
+export function mergeStates(localState, remoteState) {
+  const local = repairState(localState);
+  const remote = repairState(remoteState);
   const localSettingsTime = local.meta?.lastSavedAt ? new Date(local.meta.lastSavedAt).getTime() : 0;
   const remoteSettingsTime = remote.meta?.lastSavedAt ? new Date(remote.meta.lastSavedAt).getTime() : 0;
   const preferredSettings = remoteSettingsTime >= localSettingsTime ? remote.settings : local.settings;
@@ -153,25 +204,6 @@ export function mergeStates(localState, remoteState, defaults = {}) {
       ...local.meta,
       ...remote.meta,
       lastRemoteSyncAt: new Date().toISOString(),
-    },
-  };
-}
-
-export function copyGuestIntoAccount(guestState, accountState, defaults = {}) {
-  const guest = repairState(guestState, defaults);
-  const account = repairState(accountState, defaults);
-  return {
-    ...account,
-    settings: { ...account.settings, ...guest.settings },
-    vocabulary: guest.vocabulary?.words?.length ? guest.vocabulary : account.vocabulary,
-    progress: mergeProgressMaps(account.progress, guest.progress),
-    daily: mergeDailyMaps(account.daily, guest.daily),
-    recentReviews: [...(guest.recentReviews || []), ...(account.recentReviews || [])]
-      .sort((a, b) => new Date(b.reviewedAt).getTime() - new Date(a.reviewedAt).getTime())
-      .slice(0, MAX_RECENT_REVIEWS),
-    meta: {
-      ...account.meta,
-      lastSavedAt: new Date().toISOString(),
     },
   };
 }
