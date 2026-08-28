@@ -217,6 +217,24 @@ async function refreshSharedSheetSettings({ silent = false } = {}) {
 
 async function refreshAndSyncVocabulary({ silent = false } = {}) {
   if (runtime.vocabularyBusy) return;
+
+  // The admin refreshes from Google Sheets and republishes; everyone else reads
+  // the published vocabulary. Without this the button only re-read Firestore,
+  // so sheet edits stayed invisible until the source form was saved again.
+  if (runtime.firebase && runtime.user && isSheetsAdmin()) {
+    if (!runtime.sheetSettingsLoaded) {
+      await refreshSharedSheetSettings({ silent: true });
+    }
+    if (runtime.sheetSettings.sheetUrl) {
+      const published = await publishVocabularyFromSheet({ silent });
+      if (published) return;
+      // Sheets is unreachable and already reported the failure: quietly fall
+      // back to the last published vocabulary instead of claiming success.
+      await syncVocabulary({ silent: true });
+      return;
+    }
+  }
+
   await syncVocabulary({ silent });
 }
 
