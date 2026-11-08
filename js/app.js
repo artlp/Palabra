@@ -1,7 +1,6 @@
 import { APP_CONFIG, isFirebaseConfigured } from './config.js';
 import {
   DEFAULT_LEARNING_SETTINGS,
-  applyReview,
   buildStudyQueue,
   chooseDirection,
   computeAnalytics,
@@ -12,9 +11,10 @@ import {
   formatRelativeDue,
   isDue,
   localDateKey,
+  mergeByUpdatedAt,
   normalizeText,
   ratingLabel,
-  updateDailyAggregate,
+  recordReview,
 } from './core.js';
 import { loadWordsFromSource } from './sheets.js';
 import {
@@ -1011,19 +1011,20 @@ function rateCurrent(rating) {
   if (!current || session.phase !== 'rating') return;
   session.phase = 'saving';
   const previous = appState.progress[current.word.id] || createEmptyProgress(current.word.id);
-  const wasNew = !previous.totalReviews;
-  const reviewedAt = new Date().toISOString();
+  const now = Date.now();
+  const reviewedAt = new Date(now).toISOString();
+  const timeZone = appState.settings.timeZone;
   const answerStatus = current.manualOverride ? 'correct-manual' : current.evaluation.status;
-  const next = applyReview(previous, {
+  const reviewInput = {
     wordId: current.word.id,
     rating,
     responseMs: current.responseMs,
     direction: current.direction,
     typedCorrect: current.accepted,
     answerStatus,
-  }, Date.now());
-
-  const review = {
+  };
+  const date = localDateKey(reviewedAt, timeZone);
+  const { progress: next, daily, review } = recordReview(previous, appState.daily[date], reviewInput, {
     id: createReviewId(),
     wordId: current.word.id,
     direction: current.direction,
@@ -1038,17 +1039,14 @@ function rateCurrent(rating) {
     ratingLabel: ratingLabel(rating),
     responseMs: current.responseMs,
     hintUsed: current.hintUsed,
-    wasNew,
-    becameLearned: !previous.learnedAt && Boolean(next.learnedAt),
-    becameMastered: !previous.masteredAt && Boolean(next.masteredAt),
     reviewedAt,
-    date: localDateKey(reviewedAt, appState.settings.timeZone),
+    date,
     updatedAt: reviewedAt,
-  };
-  const daily = updateDailyAggregate(appState.daily[review.date], review, appState.settings.timeZone);
+  }, timeZone, now);
+  const wasNew = review.wasNew;
 
   appState.progress[current.word.id] = next;
-  appState.daily[review.date] = daily;
+  appState.daily[date] = daily;
   appState = appendRecentReview(appState, review);
   persistState();
 
@@ -1062,7 +1060,15 @@ function rateCurrent(rating) {
   session.current = null;
 
   if (runtime.user && runtime.firebase) {
-    queueRemoteOperation(runtime.firebase.saveReview(runtime.user.uid, { progress: next, daily, review }));
+    const uid = runtime.user.uid;
+    queueRemoteOperation(
+      runtime.firebase.saveReview(uid, { reviewInput, review, timeZone, now }).then((saved) => {
+        if (runtime.user?.uid !== uid) return;
+        // The server copy may include answers from another device; a newer local answer still wins.
+        appState.progress = mergeByUpdatedAt(appState.progress, { [saved.progress.wordId]: saved.progress });
+        appState.daily = mergeByUpdatedAt(appState.daily, { [saved.daily.date]: saved.daily });
+      }),
+    );
   }
   renderDashboard();
   window.setTimeout(showNextCard, 120);
@@ -1115,6 +1121,8 @@ function openWordDialog(wordId) {
     ['Средний ответ', reviews ? formatDuration(average) : '—'],
     ['Интервал', progress.intervalDays ? `${Math.round(progress.intervalDays)} дн.` : '—'],
     ['Сложность', reviews ? Math.round(difficultyScore(progress)) : '—'],
+    // The admin copies this into the sheet's ID column before editing the word's text.
+    ...(isSheetsAdmin() ? [['ID', word.id]] : []),
   ].map(([label, value]) => `<div class="word-stat"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`).join('');
   $('word-dialog').showModal();
 }

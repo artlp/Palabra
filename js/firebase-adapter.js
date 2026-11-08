@@ -1,8 +1,12 @@
+import { recordReview } from './core.js';
+import { personalSettings } from './local-store.js';
+
 const FIREBASE_VERSION = '12.17.0';
 const APP_URL = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`;
 const AUTH_URL = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`;
 const FIRESTORE_URL = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`;
 const MAX_PUBLIC_VOCABULARY_BYTES = 700_000;
+const MAX_PUBLIC_VOCABULARY_WORDS = 5000; // same limit as appData/vocabulary in firestore.rules
 
 let sdkPromise = null;
 
@@ -28,15 +32,6 @@ function cleanUndefined(value) {
     );
   }
   return value;
-}
-
-function personalSettings(settings = {}) {
-  const {
-    sheetUrl: _legacySheetUrl,
-    sheetName: _legacySheetName,
-    ...personal
-  } = settings || {};
-  return personal;
 }
 
 function authErrorMessage(error) {
@@ -258,6 +253,9 @@ export async function createFirebaseClient(firebaseConfig, onAuthChange = () => 
   async function publishVocabulary(user, words) {
     if (!user?.uid) throw new Error('Для публикации словаря требуется вход.');
     const cleanWords = cleanUndefined(Array.isArray(words) ? words : []);
+    if (cleanWords.length > MAX_PUBLIC_VOCABULARY_WORDS) {
+      throw new Error(`В словаре ${cleanWords.length} слов, максимум ${MAX_PUBLIC_VOCABULARY_WORDS}.`);
+    }
     const byteLength = new TextEncoder().encode(JSON.stringify(cleanWords)).length;
     if (byteLength > MAX_PUBLIC_VOCABULARY_BYTES) {
       throw new Error('Словарь слишком большой для одного документа Firestore.');
@@ -273,24 +271,31 @@ export async function createFirebaseClient(firebaseConfig, onAuthChange = () => 
     return loadPublishedVocabulary();
   }
 
-  async function saveReview(uid, { progress, daily, review }) {
-    const batch = sdk.firestore.writeBatch(db);
-    batch.set(
-      sdk.firestore.doc(db, 'users', uid, 'cardProgress', progress.wordId),
-      cleanUndefined(progress),
-      { merge: true },
-    );
-    batch.set(
-      sdk.firestore.doc(db, 'users', uid, 'daily', daily.date),
-      cleanUndefined(daily),
-      { merge: true },
-    );
-    batch.set(
-      sdk.firestore.doc(db, 'users', uid, 'reviews', review.id),
-      cleanUndefined(review),
-      { merge: true },
-    );
-    await batch.commit();
+  // Built from the server copy, not the local one: the rules accept an update only
+  // when every counter is exactly one above the stored value, and the local copy
+  // is stale after studying on another device or after a failed save.
+  async function saveReview(uid, { reviewInput, review, timeZone, now }) {
+    const progressRef = sdk.firestore.doc(db, 'users', uid, 'cardProgress', review.wordId);
+    const dailyRef = sdk.firestore.doc(db, 'users', uid, 'daily', review.date);
+    const reviewRef = sdk.firestore.doc(db, 'users', uid, 'reviews', review.id);
+    return sdk.firestore.runTransaction(db, async (transaction) => {
+      const [progressSnapshot, dailySnapshot] = await Promise.all([
+        transaction.get(progressRef),
+        transaction.get(dailyRef),
+      ]);
+      const saved = recordReview(
+        progressSnapshot.exists() ? cleanUndefined(progressSnapshot.data()) : null,
+        dailySnapshot.exists() ? cleanUndefined(dailySnapshot.data()) : null,
+        reviewInput,
+        review,
+        timeZone,
+        now,
+      );
+      transaction.set(progressRef, cleanUndefined(saved.progress), { merge: true });
+      transaction.set(dailyRef, cleanUndefined(saved.daily), { merge: true });
+      transaction.set(reviewRef, cleanUndefined(saved.review), { merge: true });
+      return saved;
+    });
   }
 
   async function commitInChunks(operations) {
