@@ -134,15 +134,3 @@ export async function loadWordsFromSource(sourceUrl, { sheetName = '', fallbackU
     syncedAt: new Date().toISOString(),
   };
 }
-
-export async function loadWordsFromFile(file) {
-  if (!file) throw new Error('Файл не выбран.');
-  const text = await file.text();
-  const words = matrixToWords(parseDelimited(text));
-  if (!words.length) throw new Error('В CSV не найдены значения в колонках B «Испанский» и C «Перевод».');
-  return {
-    words,
-    sourceType: 'Локальный CSV',
-    syncedAt: new Date().toISOString(),
-  };
-}

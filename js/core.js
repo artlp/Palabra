@@ -43,7 +43,8 @@ export function localDateKey(value = Date.now(), timeZone = DEFAULT_LEARNING_SET
 }
 
 export function dateKeyOffset(days, now = Date.now(), timeZone = DEFAULT_LEARNING_SETTINGS.timeZone) {
-  return localDateKey(now + days * DAY_MS, timeZone);
+  // Calendar math on the date key: days with a DST change last 23 or 25 hours.
+  return new Date(dateKeyToUtcNumber(localDateKey(now, timeZone)) + days * DAY_MS).toISOString().slice(0, 10);
 }
 
 export function dateKeyToUtcNumber(key) {
@@ -171,11 +172,14 @@ export function detectColumns(headers) {
   // Пользовательский формат: A «Артикль», B «Испанский», C «Перевод»,
   // D «Часть речи». Артикль и часть речи импортируются как метаданные слова.
   if (isArticleSpanishTranslationLayout) {
+    const idAliases = HEADER_ALIASES.id.map(canonicalHeader);
+    const idIndex = normalized.findIndex((header, index) => index >= 3 && idAliases.includes(header));
     return {
       article: 0,
       spanish: 1,
       russian: 2,
-      partOfSpeech: headers.length >= 4 ? 3 : undefined,
+      partOfSpeech: headers.length >= 4 && idIndex !== 3 ? 3 : undefined,
+      id: idIndex >= 0 ? idIndex : undefined,
     };
   }
 
@@ -730,6 +734,20 @@ export function updateDailyAggregate(current, review, timeZone = DEFAULT_LEARNIN
   return aggregate;
 }
 
+// One answer -> new card progress, daily totals and the review record. Used for
+// the local copy and, inside a Firestore transaction, for the server copy, so
+// each counter always grows by exactly one from the data it is written over.
+export function recordReview(previousProgress, previousDaily, reviewInput, review, timeZone, now = Date.now()) {
+  const progress = applyReview(previousProgress, reviewInput, now);
+  const fullReview = {
+    ...review,
+    wasNew: !previousProgress?.totalReviews,
+    becameLearned: !previousProgress?.learnedAt && Boolean(progress.learnedAt),
+    becameMastered: !previousProgress?.masteredAt && Boolean(progress.masteredAt),
+  };
+  return { progress, daily: updateDailyAggregate(previousDaily, fullReview, timeZone), review: fullReview };
+}
+
 export function difficultyScore(progress) {
   const reviews = Number(progress?.totalReviews) || 0;
   if (!reviews) return 50;
@@ -835,24 +853,14 @@ export function computeAnalytics(words, progressMap, dailyMap, now = Date.now(),
   };
 }
 
-export function mergeProgressMaps(localMap = {}, remoteMap = {}) {
+// Keeps, per key, whichever entry has the newer updatedAt (remote wins ties).
+export function mergeByUpdatedAt(localMap = {}, remoteMap = {}) {
   const merged = { ...localMap };
-  for (const [wordId, remote] of Object.entries(remoteMap)) {
-    const local = merged[wordId];
+  for (const [key, remote] of Object.entries(remoteMap)) {
+    const local = merged[key];
     const localTime = local?.updatedAt ? new Date(local.updatedAt).getTime() : 0;
     const remoteTime = remote?.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
-    if (!local || remoteTime >= localTime) merged[wordId] = remote;
-  }
-  return merged;
-}
-
-export function mergeDailyMaps(localMap = {}, remoteMap = {}) {
-  const merged = { ...localMap };
-  for (const [date, remote] of Object.entries(remoteMap)) {
-    const local = merged[date];
-    const localTime = local?.updatedAt ? new Date(local.updatedAt).getTime() : 0;
-    const remoteTime = remote?.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
-    if (!local || remoteTime >= localTime) merged[date] = remote;
+    if (!local || remoteTime >= localTime) merged[key] = remote;
   }
   return merged;
 }

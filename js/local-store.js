@@ -1,7 +1,6 @@
 import {
   DEFAULT_LEARNING_SETTINGS,
-  mergeDailyMaps,
-  mergeProgressMaps,
+  mergeByUpdatedAt,
 } from './core.js';
 
 const STORAGE_PREFIX = 'palabra:v2:';
@@ -14,7 +13,7 @@ function safeClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function personalSettings(settings = {}) {
+export function personalSettings(settings = {}) {
   const {
     sheetUrl: _legacySheetUrl,
     sheetName: _legacySheetName,
@@ -237,8 +236,8 @@ export function mergeStates(localState, remoteState) {
     ...local,
     settings: { ...local.settings, ...preferredSettings },
     vocabulary: preferredVocabulary,
-    progress: mergeProgressMaps(local.progress, remote.progress),
-    daily: mergeDailyMaps(local.daily, remote.daily),
+    progress: mergeByUpdatedAt(local.progress, remote.progress),
+    daily: mergeByUpdatedAt(local.daily, remote.daily),
     recentReviews: [...reviewById.values()]
       .sort((a, b) => new Date(b.reviewedAt).getTime() - new Date(a.reviewedAt).getTime())
       .slice(0, MAX_RECENT_REVIEWS),

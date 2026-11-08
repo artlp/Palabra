@@ -7,10 +7,12 @@ import {
   chooseDirection,
   computeAnalytics,
   createEmptyProgress,
+  dateKeyOffset,
   evaluateAnswer,
   localDateKey,
   matrixToWords,
   parseDelimited,
+  recordReview,
   updateDailyAggregate,
 } from '../js/core.js';
 import { parseGoogleSheetReference } from '../js/sheets.js';
@@ -310,4 +312,50 @@ test('localDateKey honors explicit time zone', () => {
   const instant = Date.parse('2026-08-03T23:30:00Z');
   assert.equal(localDateKey(instant, 'UTC'), '2026-08-03');
   assert.equal(localDateKey(instant, 'Europe/Madrid'), '2026-08-04');
+});
+
+test('a review built from the server copy grows every counter by exactly one, even when the local copy is stale', () => {
+  const tz = 'Europe/Madrid';
+  const input = (now) => ({ wordId: 'w1', rating: 2, responseMs: 1000, direction: 'es-ru', typedCorrect: true, answerStatus: 'correct' });
+  const meta = (now) => ({ id: `r${now}`, wordId: 'w1', reviewedAt: new Date(now).toISOString(), rating: 2, typedCorrect: true, direction: 'es-ru' });
+  const t0 = Date.parse('2026-11-08T09:00:00Z');
+
+  // Laptop loads the empty state; the phone then answers twice, so the server moves ahead.
+  const laptop = { progress: null, daily: null };
+  let server = { progress: null, daily: null };
+  for (const now of [t0, t0 + 60_000]) {
+    const saved = recordReview(server.progress, server.daily, input(now), meta(now), tz, now);
+    server = { progress: saved.progress, daily: saved.daily };
+  }
+
+  const now = t0 + 120_000;
+  const stale = recordReview(laptop.progress, laptop.daily, input(now), meta(now), tz, now);
+  assert.equal(stale.progress.totalReviews, 1); // what the old code sent: the rules reject it
+
+  const fresh = recordReview(server.progress, server.daily, input(now), meta(now), tz, now);
+  // Mirrors progressUpdateIsOneReview / dailyUpdateIsOneReview in firestore.rules.
+  assert.equal(fresh.progress.totalReviews, server.progress.totalReviews + 1);
+  assert.equal(fresh.progress.wordId, server.progress.wordId);
+  assert.equal(fresh.daily.reviews, server.daily.reviews + 1);
+  assert.equal(fresh.daily.date, server.daily.date);
+  assert.equal(fresh.daily.newWords, server.daily.newWords);
+  assert.equal(fresh.review.wasNew, false);
+});
+
+test('dateKeyOffset counts calendar days across daylight saving changes', () => {
+  const springNight = Date.parse('2026-03-29T22:30:00Z'); // 30 Mar 00:30 Madrid, after a 23-hour day
+  assert.deepEqual([0, -1, -2].map((days) => dateKeyOffset(days, springNight, 'Europe/Madrid')), ['2026-03-30', '2026-03-29', '2026-03-28']);
+  const autumnNight = Date.parse('2026-10-25T22:30:00Z'); // 25 Oct 23:30 Madrid, a 25-hour day
+  assert.deepEqual([0, -1, 1].map((days) => dateKeyOffset(days, autumnNight, 'Europe/Madrid')), ['2026-10-25', '2026-10-24', '2026-10-26']);
+});
+
+test('the article layout keeps word IDs from an optional ID column', () => {
+  const words = matrixToWords([
+    ['Артикль', 'Испанский', 'Перевод', 'Часть речи', 'ID'],
+    ['la', 'casa', 'дом, жилище', 'существительное', 'w_old'],
+    ['', 'ir', 'идти', 'глагол', ''],
+  ]);
+  assert.equal(words[0].id, 'w_old');
+  assert.equal(words[0].partOfSpeech, 'существительное');
+  assert.match(words[1].id, /^w_/);
 });
